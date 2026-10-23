@@ -11,6 +11,12 @@
 - 演示站：<http://47.94.222.72/save/>
 - 当前为演示数据模式；实时 MCP 配置见 [MCP_INTEGRATION.md](./MCP_INTEGRATION.md)。
 
+## 参赛状态
+
+- 报名 Issue：[M-China/mcd-developer-innovation-challenge#1180](https://github.com/M-China/mcd-developer-innovation-challenge/issues/1180)
+- 线上演示：<http://47.94.222.72/save/>
+- 当前部署为演示数据模式；配置服务端 MCP Token 后可切换实时数据。
+
 ---
 
 ## 一、产品定位
