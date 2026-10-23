@@ -13,7 +13,7 @@
 
 ## 参赛状态
 
-- 报名 Issue：[M-China/mcd-developer-innovation-challenge#1180](https://github.com/M-China/mcd-developer-innovation-challenge/issues/1180)
+- 报名 Issue：[M-China/mcd-developer-innovation-challenge#1180](https://github.com/M-China/mcd-developer-innovation-challenge/issues/1182)
 - 线上演示：<http://47.94.222.72/maimen/>
 - 当前部署为演示数据模式；配置服务端 MCP Token 后可切换实时数据。
 
