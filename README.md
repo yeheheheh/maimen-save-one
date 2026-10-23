@@ -50,11 +50,30 @@
 | mcd-optimizer | 预算/热量/人数/忌口多约束求解 | 多人数量缩放、忌口标签过滤、三方案选择 |
 | mcd-saver-planner | 全渠道最低到手价、多渠道比较 | 自取/外送费用计入，整单实付排序 |
 
-### 刻意没有整合的能力
+### 执行自动化边界
 
-- **不自动领券**：领券属于写操作，当前版本保持只读，避免替用户改变账户权益。
-- **不自动下单 / 不支付**：不代替用户提交真实订单，支付在麦当劳官方渠道完成。
+- **领券**：只做“确认后领取单张最优券”，不做全量自动领券。演示模式模拟领取；实时模式仅在单用户私有模式解锁后调用 `auto-bind-coupons`。
+- **下单**：只做“确认后创建待支付订单”，不做无人值守下单。实时模式调用 `create-order`，支付仍在麦当劳官方渠道完成。
+- **支付**：不自动支付。MCP 不提供支付工具，支付必须由用户在官方页面完成。
+- **取消/退款**：可取消未支付重复订单；已支付订单不自动取消或退款，走官方客服。
+- **固定套餐复购**：支持金额上限、每日次数、间隔和随时关闭；自动复购默认关闭，达到上限自动暂停。
 - **不伪造实时价格**：演示模式使用明确标注的示例数据；实时模式金额以官方 `calculate-price` 为准。
+
+### 执行能力与安全开关
+
+| 能力 | 演示模式 | 实时私有模式 |
+|---|---|---|
+| 报价快照 | 可用 | 可用 |
+| 领取单张最优券 | 模拟 | `ENABLE_COUPON_CLAIM=true` + 解锁 |
+| 创建待支付订单 | 模拟 | `ENABLE_ORDER_CREATE=true` + 解锁 |
+| 订单状态轮询 | 模拟 | 调用 `query-order` |
+| 取消未支付订单 | 可用 | `cancel-order` |
+| 重复订单对账 | 自动取消演示重复单 | 需 `ENABLE_AUTO_CANCEL_UNPAID=true` |
+| 固定套餐复购 | 模拟 | `ENABLE_AUTO_REPURCHASE=true` + 单用户私有模式 |
+
+实时写操作必须同时满足：`ENABLE_WRITE=true`、`SINGLE_USER_MODE=true`、`WRITE_PASSCODE` 非空，并在页面解锁。所有写操作受 `MAX_ORDER_CENTS`、`MAX_DAILY_ORDERS` 和固定套餐自身上限约束。
+
+![执行中心](docs/action-center.png)
 
 ---
 
@@ -98,6 +117,22 @@
 - 「复制清单」：生成可直接发给饭搭子的文本。
 - 「分享战报」：调用系统分享或复制战报。
 - 「我的省钱记录」：本机保存最近 20 次模拟节省，随时回看。
+
+### 路径 7：确认后执行
+
+1. 在结果页点「执行中心」。
+2. 服务端生成报价快照，锁定门店、餐品、券和金额（5 分钟有效）。
+3. 点「领取」领取单张最优券；演示模式只模拟，私有实时模式调用 MCP。
+4. 勾选确认后「生成待支付订单」；创建前再次核价，价格变化会中止并要求重新确认。
+5. 在订单卡中打开官方支付、刷新状态、取消未支付订单；演示模式可模拟支付。
+6. 支付提醒、订单状态和重复订单对账都在「提醒中心」。
+
+### 路径 8：固定套餐复购
+
+1. 在执行中心点「存为固定套餐」。
+2. 设置单次金额上限、每日最多复购次数、复购间隔。
+3. 自动复购默认关闭；开启后达到每日上限会自动暂停。
+4. 可随时在提醒中心关闭或删除；实时自动复购只在单用户私有模式生效。
 
 ---
 
@@ -146,18 +181,22 @@ Node.js 18 HTTP 服务（无框架）
 maimen-save-one/
   server.js                 # HTTP 服务、API、静态资源、限流与安全头
   lib/
-    demo-data.js            # 演示门店、菜单、套餐、券、积分
+    demo-data.js            # 演示门店、菜单、套餐、券、积分、活动
     optimizer.js            # 确定性省钱优化器
-    mcp-live.js             # 麦当劳 MCP 实时适配器（可选）
+    action-service.js       # 报价、领券、订单、提醒、对账、固定套餐
+    runtime-store.js        # JSON 持久化 + 写队列 + 审计
+    mcp-live.js             # 麦当劳 MCP 实时适配器（只读 + 私有写操作）
+  data/                     # 运行时数据（gitignored，不提交）
   public/
     index.html              # 单页应用
     styles.css              # 移动端优先样式
-    app.js                  # 交互、渲染、复制/分享、PWA
+    app.js                  # 交互、执行中心、提醒中心、PWA
     manifest.webmanifest    # PWA 清单
     sw.js                   # Service Worker
     icons/                  # 应用图标
   test/
     optimizer.test.js       # 9 项优化器测试
+    action-service.test.js  # 5 项执行/订单/复购测试
   MCP_INTEGRATION.md        # MCP 工具、调用流程与业务价值
   CONTEST_DECLARATION.md    # 官方参赛声明（内容未修改）
 ```
@@ -258,12 +297,37 @@ curl -s -X POST http://127.0.0.1:8899/api/optimize \
   -d '{"budgetCents":3000,"goal":"save","people":1,"mode":"pickup"}'
 ```
 
+### 执行 API
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/capabilities` | 当前数据模式与写操作开关 |
+| POST | `/api/quote` | 生成报价快照与一次性确认令牌 |
+| POST | `/api/coupons/claim` | 领取报价中的单张最优券 |
+| POST | `/api/orders` | 创建待支付订单 |
+| GET | `/api/orders/:id` | 查询/轮询订单状态 |
+| POST | `/api/orders/:id/cancel` | 取消未支付订单 |
+| POST | `/api/orders/:id/mock-pay` | 演示模式模拟支付 |
+| POST | `/api/orders/reconcile` | 重复未支付订单对账 |
+| GET | `/api/reminders` | 支付、券到期、报价过期等提醒 |
+| POST | `/api/reminders/:id/read` | 标记提醒已读 |
+| GET | `/api/account` | 积分、券包、活动 |
+| GET/POST | `/api/subscriptions` | 查看/创建固定套餐 |
+| POST | `/api/subscriptions/:id/toggle` | 开启/暂停固定套餐 |
+| POST | `/api/subscriptions/:id/run` | 立即复购（受上限约束） |
+| DELETE | `/api/subscriptions/:id` | 删除固定套餐 |
+| GET | `/api/audit` | 最近写操作审计 |
+| POST | `/api/private/unlock` | 解锁单用户私有模式 |
+| POST | `/api/private/lock` | 锁定私有模式 |
+
 ---
 
 ## 八、数据与安全边界
 
 - 演示数据为示例，不代表真实门店库存、价格或优惠；实际以麦当劳官方渠道为准。
-- 实时模式使用麦当劳 MCP 只读工具；当前不自动领券、不下单、不支付。
+- 实时模式默认只读；写操作只在单用户私有模式解锁后开启，受金额、频次和 kill switch 限制。
+- 每次写操作都需要报价快照与一次性确认令牌；创建订单前二次核价，价格变化会中止并要求重新确认。
+- 订单状态机记录 `quoted → confirmed → pending_payment → paid/cancelled`；未支付重复单可对账取消，已支付订单不自动退款。
 - MCP Token 不进入前端、不进入 API 响应、不写入日志。
 - 页面有 CSP、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 等安全头。
 - API 有基础限流；应用只监听 127.0.0.1，由 Nginx 对外。
@@ -288,6 +352,11 @@ npm test
 - 凑单陷阱提示
 - 1+1 组合
 - 积分开关
+- 报价 → 领券 → 订单 → 模拟支付闭环
+- 无效确认令牌拒绝
+- 金额上限拦截
+- 重复未支付订单对账
+- 固定套餐上限、到期与自动暂停
 
 ---
 

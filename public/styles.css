@@ -1721,20 +1721,22 @@ svg {
 
 .toast {
   position: fixed;
-  bottom: 88px;
+  top: 16px;
   left: 50%;
   z-index: 80;
-  max-width: calc(100% - 32px);
-  padding: 10px 16px;
+  max-width: min(320px, calc(100% - 32px));
+  padding: 8px 13px;
   border-radius: var(--radius-pill);
   color: #fff;
   background: var(--ink);
   box-shadow: var(--shadow-md);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 10px);
+  transform: translate(-50%, -8px);
   transition: 200ms ease;
 }
 
@@ -1745,6 +1747,633 @@ svg {
 
 .toast.is-error {
   background: var(--red);
+}
+
+.icon-button {
+  position: relative;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border: 2px solid var(--cream);
+  border-radius: 99px;
+  color: #fff;
+  background: var(--red);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.results-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.execution-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.execution-badge.is-demo {
+  color: #7a5300;
+  background: var(--gold-soft);
+}
+
+.execution-badge.is-live {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.execution-badge.is-locked {
+  color: var(--muted);
+  background: #eeeae3;
+}
+
+.detail-sub {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.action-note {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 199, 44, 0.35);
+  border-radius: 10px;
+  color: #7a5300;
+  background: var(--gold-soft);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.action-note.is-expired {
+  color: var(--red-dark);
+  border-color: rgba(218, 41, 28, 0.25);
+  background: var(--red-soft);
+}
+
+.execution-steps {
+  display: grid;
+  gap: 2px;
+}
+
+.execution-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 11px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.execution-step:last-child {
+  border-bottom: 0;
+}
+
+.step-index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.execution-step.is-done .step-index {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.step-main {
+  min-width: 0;
+}
+
+.step-main b {
+  display: block;
+  font-size: 11px;
+}
+
+.step-main small {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.step-state {
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.confirm-box,
+.unlock-box,
+.inline-form {
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.check-row input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  accent-color: var(--red);
+}
+
+.confirm-box .select-button {
+  margin-top: 10px;
+  width: 100%;
+}
+
+.unlock-box {
+  border-color: rgba(218, 41, 28, 0.22);
+  background: var(--red-soft);
+}
+
+.unlock-box b {
+  font-size: 11px;
+}
+
+.unlock-box p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.inline-row {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.inline-row input {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 11px;
+}
+
+.inline-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.inline-form-head b {
+  font-size: 11px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.form-grid input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 11px;
+}
+
+.inline-form .check-row {
+  margin-top: 11px;
+}
+
+.inline-form .select-button {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.form-help {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.order-card {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(31, 122, 77, 0.2);
+  border-radius: 14px;
+  background: var(--green-soft);
+}
+
+.order-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.order-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.order-status {
+  display: inline-flex;
+  padding: 4px 7px;
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  background: #eeeae3;
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.order-status.status-paid {
+  color: var(--green);
+  background: #dff3e8;
+}
+
+.order-status.status-pending_payment {
+  color: #7a5300;
+  background: var(--gold-soft);
+}
+
+.order-status.status-cancelled,
+.order-status.status-expired,
+.order-status.status-failed {
+  color: var(--red-dark);
+  background: var(--red-soft);
+}
+
+.order-meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 9.5px;
+  flex-wrap: wrap;
+}
+
+.order-meta span:first-child {
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.order-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.order-help {
+  margin: 9px 0 0;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.loading-dots {
+  display: flex;
+  gap: 4px;
+  margin-top: 16px;
+}
+
+.loading-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: bar-bounce 0.9s ease-in-out infinite;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.loading-dots span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.empty-state {
+  padding: 20px 4px 8px;
+  text-align: center;
+}
+
+.empty-state h2 {
+  font-size: 20px;
+}
+
+.empty-state p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.empty-state .loading-dots {
+  justify-content: center;
+}
+
+.empty-copy {
+  margin: 8px 0;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.account-card {
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.account-card small {
+  display: block;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.account-card strong {
+  display: block;
+  margin: 5px 0 2px;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.account-card span {
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.account-section {
+  margin-top: 14px;
+}
+
+.account-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.account-section-head h4 {
+  margin: 0;
+  font-size: 11px;
+}
+
+.account-section-head span {
+  color: var(--faint);
+  font-size: 8.5px;
+}
+
+.coupon-list,
+.activity-list,
+.reminder-list,
+.subscription-list {
+  display: grid;
+  gap: 7px;
+}
+
+.account-coupon,
+.account-activity {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.account-coupon.is-claimed {
+  opacity: 0.62;
+}
+
+.account-coupon b,
+.account-activity b {
+  display: block;
+  font-size: 10px;
+}
+
+.account-coupon small,
+.account-activity small {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 8.5px;
+  line-height: 1.4;
+}
+
+.account-coupon > span,
+.account-activity > span {
+  flex: 0 0 auto;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.account-activity > span {
+  color: var(--muted);
+  font-family: var(--font);
+  font-weight: 600;
+}
+
+.reminder-item {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.reminder-item.is-due {
+  border-color: rgba(255, 199, 44, 0.45);
+  background: var(--gold-soft);
+}
+
+.reminder-item.is-read {
+  opacity: 0.6;
+}
+
+.reminder-type {
+  color: var(--red);
+  font-size: 8.5px;
+  font-weight: 800;
+}
+
+.reminder-main b {
+  display: block;
+  font-size: 10px;
+}
+
+.reminder-main p {
+  margin: 2px 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.reminder-main small {
+  color: var(--faint);
+  font-size: 8.5px;
+}
+
+.reminder-read {
+  color: var(--faint);
+  font-size: 8.5px;
+}
+
+.subscription-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.subscription-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.subscription-head b {
+  display: block;
+  font-size: 10px;
+}
+
+.subscription-head small {
+  display: block;
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 8.5px;
+}
+
+.subscription-caps,
+.subscription-times {
+  display: flex;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 8.5px;
+  flex-wrap: wrap;
+}
+
+.subscription-times {
+  color: var(--faint);
+}
+
+.subscription-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+
+.subscription-actions .mini-button,
+.subscription-actions .ghost-button {
+  min-height: 29px;
+  padding: 0 9px;
+  font-size: 9px;
+}
+
+@media (max-width: 560px) {
+  .results-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .execution-step {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-grid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .reminder-item {
+    grid-template-columns: 1fr auto;
+  }
+
+  .reminder-type {
+    grid-column: 1 / -1;
+  }
+
+  .reminder-item > .mini-button,
+  .reminder-item > .reminder-read {
+    grid-column: 2;
+    grid-row: 2;
+  }
 }
 
 @keyframes rise-in {
@@ -1893,7 +2522,8 @@ svg {
   }
 
   .toast {
-    bottom: 82px;
+    top: 12px;
+    bottom: auto;
   }
 
   .modal {

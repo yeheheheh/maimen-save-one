@@ -23,6 +23,23 @@ const state = {
   bootstrapped: false,
   recordedFor: "",
   history: [],
+  capabilities: null,
+  quote: null,
+  quoteTokens: null,
+  order: null,
+  reminders: [],
+  account: null,
+  accountSource: "demo",
+  accountWarnings: [],
+  subscriptions: [],
+  actionLoading: false,
+  showOrderConfirm: false,
+  showSubForm: false,
+  quoteExpired: false,
+  orderPollStarted: 0,
+  orderPollTimer: null,
+  quoteTimer: null,
+  reminderTimer: null,
   toastTimer: null,
   loadingTimer: null,
   lastFocus: null,
@@ -56,6 +73,13 @@ const els = {
   againBtn: $("#againBtn"),
   historyBtn: $("#historyBtn"),
   historyTotal: $("#historyTotal"),
+  actionCenterBtn: $("#actionCenterBtn"),
+  actionModal: $("#actionModal"),
+  actionContent: $("#actionContent"),
+  remindersBtn: $("#remindersBtn"),
+  reminderBadge: $("#reminderBadge"),
+  remindersModal: $("#remindersModal"),
+  remindersContent: $("#remindersContent"),
   detailModal: $("#detailModal"),
   storeModal: $("#storeModal"),
   infoModal: $("#infoModal"),
@@ -80,6 +104,15 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function money(cents) {
@@ -416,6 +449,16 @@ function planCardHtml(plan) {
 }
 
 function renderResult(data) {
+  if (!els.actionModal.classList.contains("hidden")) closeModal("action");
+  stopOrderPolling();
+  clearInterval(state.quoteTimer);
+  state.quoteTimer = null;
+  state.quote = null;
+  state.quoteTokens = null;
+  state.order = null;
+  state.quoteExpired = false;
+  state.showOrderConfirm = false;
+  state.showSubForm = false;
   state.result = data;
   state.selectedPlanId = data.recommendedId || data.plans?.[0]?.id || "";
   state.recordedFor = "";
@@ -614,8 +657,18 @@ async function sharePlan(plan) {
   showToast(ok ? "战报已复制，可以发给饭搭子了" : "分享失败，请稍后再试", !ok);
 }
 
+function modalByName(name) {
+  return {
+    detail: els.detailModal,
+    store: els.storeModal,
+    info: els.infoModal,
+    action: els.actionModal,
+    reminders: els.remindersModal,
+  }[name];
+}
+
 function openModal(name) {
-  const modal = name === "detail" ? els.detailModal : name === "store" ? els.storeModal : els.infoModal;
+  const modal = modalByName(name);
   if (!modal) return;
   state.lastFocus = document.activeElement;
   modal.classList.remove("hidden");
@@ -625,19 +678,24 @@ function openModal(name) {
 }
 
 function closeModal(name) {
-  const modal = name === "detail" ? els.detailModal : name === "store" ? els.storeModal : els.infoModal;
+  const modal = modalByName(name);
   if (!modal) return;
   modal.classList.add("hidden");
-  if (![els.detailModal, els.storeModal, els.infoModal].some((item) => item && !item.classList.contains("hidden"))) {
-    document.body.classList.remove("modal-open");
+  if (name === "action") {
+    clearInterval(state.quoteTimer);
+    state.quoteTimer = null;
+    stopOrderPolling();
   }
+  const anyOpen = [els.detailModal, els.storeModal, els.infoModal, els.actionModal, els.remindersModal]
+    .some((item) => item && !item.classList.contains("hidden"));
+  if (!anyOpen) document.body.classList.remove("modal-open");
   if (state.lastFocus && typeof state.lastFocus.focus === "function") {
     state.lastFocus.focus({ preventScroll: true });
   }
 }
 
 function closeAllModals() {
-  ["detail", "store", "info"].forEach(closeModal);
+  ["detail", "store", "info", "action", "reminders"].forEach(closeModal);
 }
 
 function showHistory() {
@@ -734,6 +792,813 @@ function bindChipContainer(container, handler) {
   });
 }
 
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    const error = new Error(data.error || "请求失败，请稍后重试");
+    error.code = data.code;
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+function buildInput() {
+  return {
+    budgetCents: state.budgetCents,
+    goal: state.goal,
+    people: state.people,
+    mode: state.orderMode,
+    storeId: state.storeId,
+    caloriesMax: state.caloriesMax,
+    avoidTags: state.avoidTags,
+    usePoints: state.usePoints,
+    city: "上海",
+    keyword: "人民广场",
+  };
+}
+
+function executionBadge() {
+  const caps = state.capabilities || {};
+  if (caps.mode === "demo" || caps.writeMode === "demo") {
+    return '<span class="execution-badge is-demo">演示执行 · 不写真实账户</span>';
+  }
+  if (caps.writeMode === "private" && caps.unlocked) {
+    return '<span class="execution-badge is-live">私有实时 · 已解锁</span>';
+  }
+  if (caps.writeMode === "private") {
+    return '<span class="execution-badge is-locked">私有实时 · 待解锁</span>';
+  }
+  return '<span class="execution-badge is-locked">只读模式</span>';
+}
+
+function orderStatusLabel(status) {
+  return {
+    pending_payment: "待支付",
+    paid: "已支付",
+    cancelled: "已取消",
+    expired: "已过期",
+    failed: "失败",
+  }[status] || status || "未知";
+}
+
+function formatDateTime(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function countdownText(ms) {
+  if (ms <= 0) return "已过期";
+  const total = Math.floor(ms / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function modeText(mode) {
+  return mode === "delivery" ? "麦乐送" : "到店自取";
+}
+
+function actionErrorHtml(message) {
+  return `
+    <div class="empty-state">
+      <p class="card-kicker">执行中心</p>
+      <h2 id="actionTitle">暂时无法生成报价</h2>
+      <p>${escapeHtml(message)}</p>
+      <div class="modal-actions">
+        <button type="button" class="select-button" data-action="retry-quote">重新生成报价</button>
+      </div>
+    </div>`;
+}
+
+async function openActionCenter() {
+  const plan = selectedPlan();
+  if (!plan || !state.result) {
+    showToast("先算一单，再进入执行中心");
+    return;
+  }
+  state.quote = null;
+  state.quoteTokens = null;
+  state.order = null;
+  state.quoteExpired = false;
+  state.showOrderConfirm = false;
+  state.showSubForm = false;
+  els.actionContent.innerHTML = `
+    <div class="empty-state">
+      <p class="card-kicker">执行中心</p>
+      <h2 id="actionTitle">正在生成报价快照</h2>
+      <p>锁定门店、餐品、券和金额，随后可以选择领券或生成待支付订单。</p>
+      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>`;
+  openModal("action");
+  try {
+    const data = await api("api/quote", {
+      method: "POST",
+      body: JSON.stringify({ input: buildInput(), planId: plan.id }),
+    });
+    state.quote = data.quote;
+    state.quoteTokens = data.tokens;
+    state.capabilities = data.capabilities || state.capabilities;
+    renderActionCenter();
+    startQuoteTimer();
+    loadSubscriptions();
+    loadReminders(true);
+  } catch (error) {
+    els.actionContent.innerHTML = actionErrorHtml(error.message);
+  }
+}
+
+function startQuoteTimer() {
+  clearInterval(state.quoteTimer);
+  if (!state.quote) return;
+  const tick = () => {
+    const element = $("#quoteCountdown");
+    if (!element) return;
+    const left = Date.parse(state.quote.expiresAt) - Date.now();
+    element.textContent = countdownText(left);
+    if (left <= 0 && !state.quoteExpired) {
+      state.quoteExpired = true;
+      renderActionCenter();
+    }
+  };
+  tick();
+  state.quoteTimer = setInterval(tick, 1000);
+}
+
+function renderActionCenter() {
+  const quote = state.quote;
+  if (!quote) return;
+  const caps = state.capabilities || {};
+  const plan = quote.plan;
+  const coupon = plan.coupon;
+  const expired = state.quoteExpired || Date.parse(quote.expiresAt) <= Date.now();
+  const claimed = Boolean(quote.couponClaimed);
+  const order = state.order;
+  const payUrl = order ? safeExternalUrl(order.payUrl) : "";
+  const orderKicker =
+    order?.status === "paid"
+      ? "已完成订单"
+      : order?.status === "cancelled"
+        ? "已取消订单"
+        : "待支付订单";
+  const orderHelp =
+    order?.status === "paid"
+      ? "演示支付已完成；实时模式以麦当劳官方支付状态为准。"
+      : order?.status === "cancelled"
+        ? "订单已取消，不会继续扣款。"
+        : payUrl
+          ? "支付链接由麦当劳官方返回；请核对金额后再支付。"
+          : "演示订单不会产生真实扣款；可点击模拟支付验证状态轮询。";
+  const canClaim = Boolean(coupon) && !claimed && !expired && caps.couponClaim;
+  const canOrder = !expired && !order && caps.orderCreate;
+  const locked = caps.writeMode === "private" && !caps.unlocked;
+  const couponStarted = coupon && !claimed && !expired;
+  const steps = [];
+  steps.push(`
+    <div class="execution-step is-done">
+      <span class="step-index">1</span>
+      <div class="step-main"><b>报价快照已生成</b><small>已锁定门店、餐品、券和金额</small></div>
+      <span class="step-state">已锁定</span>
+    </div>`);
+  steps.push(`
+    <div class="execution-step ${claimed ? "is-done" : ""}">
+      <span class="step-index">2</span>
+      <div class="step-main"><b>领取最优券</b><small>${coupon ? (claimed ? "已领取，可在本单使用" : `当前最优券：${escapeHtml(coupon.name)}`) : "当前方案无需领券"}</small></div>
+      ${couponStarted ? `<button type="button" class="mini-button" data-action="claim-coupon" ${canClaim ? "" : "disabled"}>${caps.couponClaim ? "领取" : "未开启"}</button>` : `<span class="step-state">${coupon ? "已完成" : "无需操作"}</span>`}
+    </div>`);
+  steps.push(`
+    <div class="execution-step ${order ? "is-done" : ""}">
+      <span class="step-index">3</span>
+      <div class="step-main"><b>创建待支付订单</b><small>${order ? `订单 ${escapeHtml(order.id)}` : "生成订单后，支付仍在麦当劳官方页面完成"}</small></div>
+      ${!order && !expired ? `<button type="button" class="mini-button" data-action="show-order-confirm" ${canOrder ? "" : "disabled"}>${caps.orderCreate ? "生成订单" : "未开启"}</button>` : `<span class="step-state">${order ? "已创建" : "已过期"}</span>`}
+    </div>`);
+  steps.push(`
+    <div class="execution-step ${order?.status === "paid" ? "is-done" : ""}">
+      <span class="step-index">4</span>
+      <div class="step-main"><b>完成支付</b><small>支付在麦当劳官方渠道完成，本页只做状态提醒</small></div>
+      <span class="step-state">${order ? orderStatusLabel(order.status) : "待订单"}</span>
+    </div>`);
+
+  const orderHtml = order
+    ? `
+      <div class="order-card">
+        <div class="order-head">
+          <div>
+            <p class="card-kicker">${orderKicker}</p>
+            <h3>${escapeHtml(order.id)}</h3>
+          </div>
+          <span class="order-status status-${escapeAttr(order.status)}">${orderStatusLabel(order.status)}</span>
+        </div>
+        <div class="order-meta">
+          <span>${money(order.amountCents)}</span>
+          <span>${escapeHtml(order.store?.name || "")}</span>
+          <span>${modeText(order.plan?.mode)}</span>
+        </div>
+        <div class="order-actions">
+          ${payUrl ? `<a class="mini-button mini-button-red" href="${escapeAttr(payUrl)}" target="_blank" rel="noreferrer">打开官方支付</a>` : ""}
+          ${order.demo && order.status === "pending_payment" ? '<button type="button" class="mini-button" data-action="mock-pay">模拟支付成功</button>' : ""}
+          ${order.status === "pending_payment" ? '<button type="button" class="ghost-button" data-action="cancel-order">取消未支付订单</button>' : ""}
+          <button type="button" class="ghost-button" data-action="refresh-order">刷新状态</button>
+        </div>
+        <p class="order-help">${orderHelp}</p>
+      </div>`
+    : "";
+
+  const confirmHtml = state.showOrderConfirm && !order
+    ? `
+      <div class="confirm-box">
+        <label class="check-row">
+          <input id="orderConfirmCheck" type="checkbox">
+          <span>我已确认门店、餐品、金额和取餐方式</span>
+        </label>
+        <button type="button" class="select-button" data-action="create-order" ${caps.orderCreate ? "" : "disabled"}>确认生成待支付订单</button>
+      </div>`
+    : "";
+
+  const unlockHtml = locked && caps.writePasscodeRequired
+    ? `
+      <div class="unlock-box">
+        <div>
+          <b>实时写操作已锁定</b>
+          <p>输入私有模式口令后，领券和下单仍受金额、频次和 kill switch 限制。</p>
+        </div>
+        <div class="inline-row">
+          <input id="privatePasscode" type="password" autocomplete="off" placeholder="私有模式口令">
+          <button type="button" class="mini-button mini-button-red" data-action="unlock">解锁</button>
+        </div>
+      </div>`
+    : "";
+
+  const subForm = state.showSubForm
+    ? `
+      <div class="inline-form">
+        <div class="inline-form-head">
+          <b>存为固定套餐</b>
+          <button type="button" class="text-button" data-action="hide-sub-form">收起</button>
+        </div>
+        <div class="form-grid">
+          <label>单次金额上限（元）<input id="subMaxAmount" type="number" min="1" max="200" step="1" value="${(plan.price.finalCents / 100).toFixed(0)}"></label>
+          <label>每日最多复购次数<input id="subRuns" type="number" min="1" max="10" step="1" value="1"></label>
+          <label>复购间隔（分钟）<input id="subInterval" type="number" min="1" max="10080" step="1" value="1440"></label>
+        </div>
+        <label class="check-row">
+          <input id="subAutoOrder" type="checkbox">
+          <span>允许自动复购（仅单用户私有模式生效，演示模式只模拟）</span>
+        </label>
+        <p class="form-help">自动复购会在达到每日次数上限后自动关闭，随时可在提醒中心关闭。</p>
+        <button type="button" class="select-button" data-action="save-sub">保存固定套餐</button>
+      </div>`
+    : "";
+
+  els.actionContent.innerHTML = `
+    <div class="detail-hero">
+      <div>
+        <p class="card-kicker">执行中心 · ${escapeHtml(quote.id.slice(0, 12))}</p>
+        <h2 id="actionTitle">${escapeHtml(plan.label)} · ${money(plan.price.finalCents)}</h2>
+        <p class="detail-sub">${escapeHtml(quote.store?.name || "")} · ${modeText(plan.mode)} · 报价有效期 <span id="quoteCountdown">${countdownText(Date.parse(quote.expiresAt) - Date.now())}</span></p>
+      </div>
+      ${executionBadge()}
+    </div>
+    <div class="action-note ${expired ? "is-expired" : ""}">
+      ${expired ? "报价已过期，请重新生成报价后再执行。" : "报价已锁定当前门店、餐品、券和金额；如官方价格变化，服务端会中止并在重新确认后继续。"}
+    </div>
+    <div class="detail-section">
+      <h3>执行步骤</h3>
+      <div class="execution-steps">${steps.join("")}</div>
+      ${unlockHtml}
+      ${confirmHtml}
+      ${orderHtml}
+    </div>
+    <div class="detail-section">
+      <h3>动作</h3>
+      <div class="modal-actions">
+        <button type="button" class="ghost-button" data-action="copy-quote">复制清单</button>
+        <button type="button" class="ghost-button" data-action="show-sub-form">存为固定套餐</button>
+        <button type="button" class="ghost-button" data-action="reconcile">一键对账</button>
+        ${expired ? '<button type="button" class="select-button" data-action="retry-quote">重新生成报价</button>' : ""}
+      </div>
+      <p class="micro-trust">${state.subscriptions.length ? `已保存 ${state.subscriptions.length} 个固定套餐，可在提醒中心管理。` : "固定套餐支持金额上限、每日次数限制和随时关闭。"}</p>
+    </div>
+    ${subForm}
+  `;
+}
+
+async function claimCouponAction() {
+  if (!state.quote || !state.quoteTokens) return;
+  const caps = state.capabilities || {};
+  if (!caps.couponClaim) {
+    showToast("领券未开启；实时模式请先解锁私有模式", true);
+    return;
+  }
+  try {
+    const data = await api("api/coupons/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        quoteId: state.quote.id,
+        token: state.quoteTokens.claim,
+      }),
+    });
+    state.quote = data.quote;
+    state.capabilities = data.capabilities || state.capabilities;
+    renderActionCenter();
+    loadReminders(true);
+    showToast(data.idempotent ? "这张券已经领取过了" : "最优券已领取");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function showOrderConfirm() {
+  state.showOrderConfirm = true;
+  renderActionCenter();
+}
+
+async function createOrderAction() {
+  if (!state.quote || !state.quoteTokens) return;
+  const checkbox = $("#orderConfirmCheck");
+  if (!checkbox || !checkbox.checked) {
+    showToast("请先确认门店、餐品和金额", true);
+    return;
+  }
+  try {
+    const data = await api("api/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        quoteId: state.quote.id,
+        token: state.quoteTokens.order,
+      }),
+    });
+    state.order = data.order;
+    state.showOrderConfirm = false;
+    renderActionCenter();
+    startOrderPolling();
+    loadReminders(true);
+    showToast("订单已创建，请核对支付页");
+  } catch (error) {
+    if (error.code === "PRICE_CHANGED") {
+      showToast(error.message, true);
+      openActionCenter();
+      return;
+    }
+    showToast(error.message, true);
+  }
+}
+
+async function unlockPrivateAction() {
+  const input = $("#privatePasscode");
+  const passcode = input?.value?.trim();
+  if (!passcode) {
+    showToast("请输入私有模式口令", true);
+    return;
+  }
+  try {
+    await api("api/private/unlock", {
+      method: "POST",
+      body: JSON.stringify({ passcode }),
+    });
+    await loadCapabilities();
+    renderActionCenter();
+    showToast("私有模式已解锁");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function refreshOrderAction() {
+  if (!state.order) return;
+  try {
+    const data = await api(`api/orders/${encodeURIComponent(state.order.id)}`);
+    state.order = data.order;
+    renderActionCenter();
+    if (state.order.status !== "pending_payment") stopOrderPolling();
+    loadReminders(true);
+    showToast(`订单状态：${orderStatusLabel(state.order.status)}`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function cancelOrderAction() {
+  if (!state.order) return;
+  if (!window.confirm("确认取消这笔未支付订单？已支付订单不能在这里取消。")) return;
+  try {
+    const data = await api(`api/orders/${encodeURIComponent(state.order.id)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
+    state.order = data.order;
+    stopOrderPolling();
+    renderActionCenter();
+    loadReminders(true);
+    showToast("未支付订单已取消");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function mockPayAction() {
+  if (!state.order) return;
+  try {
+    const data = await api(`api/orders/${encodeURIComponent(state.order.id)}/mock-pay`, {
+      method: "POST",
+      body: "{}",
+    });
+    state.order = data.order;
+    stopOrderPolling();
+    renderActionCenter();
+    loadReminders(true);
+    showToast("演示支付完成");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function startOrderPolling() {
+  stopOrderPolling();
+  if (!state.order) return;
+  state.orderPollStarted = Date.now();
+  state.orderPollTimer = setInterval(async () => {
+    if (!state.order || state.order.status !== "pending_payment") {
+      stopOrderPolling();
+      return;
+    }
+    if (Date.now() - state.orderPollStarted > 2 * 60_000) {
+      stopOrderPolling();
+      return;
+    }
+    try {
+      const data = await api(`api/orders/${encodeURIComponent(state.order.id)}`);
+      state.order = data.order;
+      if (state.order.status !== "pending_payment") stopOrderPolling();
+      if (!els.actionModal.classList.contains("hidden")) renderActionCenter();
+      loadReminders(true);
+    } catch {
+      // polling failures are non-fatal
+    }
+  }, 5000);
+}
+
+function stopOrderPolling() {
+  clearInterval(state.orderPollTimer);
+  state.orderPollTimer = null;
+}
+
+async function loadCapabilities() {
+  try {
+    state.capabilities = await api("api/capabilities");
+  } catch {
+    // keep previous capabilities
+  }
+}
+
+async function copyQuoteAction() {
+  if (!state.quote) return;
+  await copyPlan(state.quote.plan);
+}
+
+function reminderTypeLabel(type) {
+  return {
+    quote_expiry: "报价过期",
+    payment_due: "支付提醒",
+    coupon_expiry: "券到期",
+    coupon_claimed: "已领券",
+    duplicate_orders: "重复订单",
+    subscription_limit: "复购上限",
+  }[type] || "提醒";
+}
+
+function updateReminderBadge() {
+  const unread = state.reminders.filter((reminder) => !reminder.read).length;
+  if (!els.reminderBadge) return;
+  els.reminderBadge.textContent = unread > 9 ? "9+" : String(unread);
+  els.reminderBadge.classList.toggle("hidden", unread === 0);
+}
+
+async function loadReminders(quiet = true) {
+  try {
+    const data = await api("api/reminders");
+    state.reminders = data.reminders || [];
+    updateReminderBadge();
+    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
+  } catch {
+    if (!quiet) showToast("提醒加载失败", true);
+  }
+}
+
+async function loadAccount() {
+  try {
+    const data = await api("api/account");
+    state.account = data.account;
+    state.accountSource = data.source || "demo";
+    state.accountWarnings = data.warnings || [];
+    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
+  } catch (error) {
+    if (!els.remindersModal.classList.contains("hidden")) {
+      showToast(error.message || "权益加载失败", true);
+    }
+  }
+}
+
+async function loadSubscriptions() {
+  try {
+    const data = await api("api/subscriptions");
+    state.subscriptions = data.subscriptions || [];
+    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
+    if (!els.actionModal.classList.contains("hidden") && state.quote) renderActionCenter();
+  } catch {
+    // non-fatal
+  }
+}
+
+function renderAccountSection() {
+  const account = state.account;
+  if (!account) {
+    return '<div class="empty-copy">正在加载权益数据…</div>';
+  }
+  const coupons = account.coupons || [];
+  const activities = account.activities || [];
+  const points = Number(account.pointsBalance || 0);
+  const expiring = account.pointsExpiringAt
+    ? `最近过期 ${formatDateTime(account.pointsExpiringAt)}`
+    : "暂无积分过期信息";
+  return `
+    <div class="account-grid">
+      <div class="account-card">
+        <small>可用积分</small>
+        <strong>${number(points)}</strong>
+        <span>${escapeHtml(expiring)}</span>
+      </div>
+      <div class="account-card">
+        <small>可用券</small>
+        <strong>${coupons.filter((coupon) => !coupon.claimed).length}</strong>
+        <span>${state.accountSource === "live" ? "实时券包" : "演示券包"}</span>
+      </div>
+      <div class="account-card">
+        <small>进行中活动</small>
+        <strong>${activities.length}</strong>
+        <span>来自活动日历</span>
+      </div>
+    </div>
+    <div class="account-section">
+      <div class="account-section-head"><h4>我的券</h4><span>${state.accountSource === "live" ? "实时" : "演示"}</span></div>
+      <div class="coupon-list">
+        ${coupons.length ? coupons.slice(0, 6).map((coupon) => `
+          <div class="account-coupon ${coupon.claimed ? "is-claimed" : ""}">
+            <div><b>${escapeHtml(coupon.name)}</b><small>${coupon.expiresAt ? `到期 ${formatDateTime(coupon.expiresAt)}` : "到期时间以官方为准"}</small></div>
+            <span>${coupon.claimed ? "已领取" : coupon.discountCents ? `省 ${money(coupon.discountCents)}` : "可用"}</span>
+          </div>`).join("") : '<p class="empty-copy">暂无可用券</p>'}
+      </div>
+    </div>
+    <div class="account-section">
+      <div class="account-section-head"><h4>近期活动</h4><span>${state.accountSource === "live" ? "实时" : "演示"}</span></div>
+      <div class="activity-list">
+        ${activities.length ? activities.slice(0, 4).map((activity) => `
+          <div class="account-activity">
+            <div><b>${escapeHtml(activity.title)}</b><small>${escapeHtml(activity.description || "")}</small></div>
+            <span>${activity.endsAt ? `至 ${formatDateTime(activity.endsAt)}` : escapeHtml(activity.tag || "")}</span>
+          </div>`).join("") : '<p class="empty-copy">暂无活动</p>'}
+      </div>
+    </div>
+    ${state.accountWarnings.length ? `<div class="action-note">${state.accountWarnings.map(escapeHtml).join(" · ")}</div>` : ""}
+  `;
+}
+
+function renderSubscriptionCards() {
+  if (!state.subscriptions.length) {
+    return '<p class="empty-copy">还没有固定套餐。先在执行中心把一套方案存为固定套餐。</p>';
+  }
+  return state.subscriptions.map((subscription) => {
+    const caps = subscription.caps || {};
+    const lastRun = subscription.runs?.length ? subscription.runs[subscription.runs.length - 1] : null;
+    return `
+      <div class="subscription-card">
+        <div class="subscription-head">
+          <div>
+            <b>${escapeHtml(subscription.plan?.label || "固定套餐")} · ${money(subscription.plan?.price?.finalCents || 0)}</b>
+            <small>${subscription.autoOrder ? "自动复购" : "手动复购"} · ${subscription.enabled ? "已开启" : "已关闭"}</small>
+          </div>
+          <span class="order-status ${subscription.enabled ? "status-paid" : "status-cancelled"}">${subscription.enabled ? "运行中" : "已暂停"}</span>
+        </div>
+        <div class="subscription-caps">
+          <span>单次上限 ${money(caps.maxAmountCents || 0)}</span>
+          <span>每日 ${caps.maxRunsPerDay || 1} 次</span>
+          <span>间隔 ${caps.intervalMinutes || 1440} 分钟</span>
+        </div>
+        <div class="subscription-times">
+          <span>上次：${lastRun ? formatDateTime(lastRun.ts) + (lastRun.success ? " 成功" : " 失败") : "尚未运行"}</span>
+          <span>下次：${subscription.nextRunAt ? formatDateTime(subscription.nextRunAt) : "未排期"}</span>
+        </div>
+        <div class="subscription-actions">
+          <button type="button" class="mini-button" data-action="toggle-sub" data-sub-id="${escapeAttr(subscription.id)}" data-enabled="${subscription.enabled ? "false" : "true"}">${subscription.enabled ? "关闭" : "开启"}</button>
+          <button type="button" class="mini-button mini-button-red" data-action="run-sub" data-sub-id="${escapeAttr(subscription.id)}">立即复购</button>
+          <button type="button" class="ghost-button" data-action="delete-sub" data-sub-id="${escapeAttr(subscription.id)}">删除</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function renderReminders() {
+  const accountHtml = renderAccountSection();
+  const unread = state.reminders.filter((reminder) => !reminder.read).length;
+  const visibleReminders = state.reminders.filter((reminder) => !reminder.read).slice(0, 12);
+  const reminderHtml = visibleReminders.length
+    ? visibleReminders.map((reminder) => `
+        <div class="reminder-item ${reminder.due ? "is-due" : ""} ${reminder.read ? "is-read" : ""}">
+          <span class="reminder-type">${reminderTypeLabel(reminder.type)}</span>
+          <div class="reminder-main">
+            <b>${escapeHtml(reminder.title)}</b>
+            <p>${escapeHtml(reminder.body)}</p>
+            <small>${formatDateTime(reminder.dueAt)}${reminder.due ? " · 已到提醒时间" : ""}</small>
+          </div>
+          ${reminder.read ? '<span class="reminder-read">已读</span>' : `<button type="button" class="mini-button" data-action="mark-reminder" data-reminder-id="${escapeAttr(reminder.id)}">知道了</button>`}
+        </div>`).join("")
+    : '<p class="empty-copy">暂无提醒。报价、支付和券到期时会在这里出现。</p>';
+
+  els.remindersContent.innerHTML = `
+    <div class="detail-hero">
+      <div>
+        <p class="card-kicker">提醒中心 · ${unread} 条未读</p>
+        <h2 id="remindersTitle">权益、订单与固定套餐</h2>
+        <p class="detail-sub">${state.accountSource === "live" ? "实时账户数据" : "演示账户数据"} · 提醒只保存在本机服务端</p>
+      </div>
+      <div class="topbar-right">
+        <button type="button" class="ghost-button" data-action="reconcile">一键对账</button>
+        <button type="button" class="ghost-button" data-action="reload-reminders">刷新</button>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h3>我的权益</h3>
+      ${accountHtml}
+    </div>
+    <div class="detail-section">
+      <h3>提醒</h3>
+      <div class="reminder-list">${reminderHtml}</div>
+    </div>
+    <div class="detail-section">
+      <h3>固定套餐复购</h3>
+      <div class="subscription-list">${renderSubscriptionCards()}</div>
+      <p class="form-help">自动复购默认关闭；开启后受单次金额、每日次数和间隔限制，达到上限会自动暂停。实时自动复购只在单用户私有模式生效。</p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="ghost-button" data-action="mark-all-read">全部标记已读</button>
+    </div>
+  `;
+}
+
+async function openReminders() {
+  openModal("reminders");
+  els.remindersContent.innerHTML = `
+    <div class="empty-state">
+      <p class="card-kicker">提醒中心</p>
+      <h2 id="remindersTitle">正在加载权益与提醒</h2>
+      <p>积分、券、活动、订单状态和复购计划会汇总到这里。</p>
+      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>`;
+  await Promise.allSettled([loadReminders(false), loadAccount(), loadSubscriptions()]);
+  renderReminders();
+}
+
+async function markReminderAction(reminderId) {
+  try {
+    await api(`api/reminders/${encodeURIComponent(reminderId)}/read`, {
+      method: "POST",
+      body: "{}",
+    });
+    const reminder = state.reminders.find((item) => item.id === reminderId);
+    if (reminder) reminder.read = true;
+    updateReminderBadge();
+    renderReminders();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function markAllRemindersRead() {
+  const unread = state.reminders.filter((reminder) => !reminder.read);
+  for (const reminder of unread) {
+    try {
+      await api(`api/reminders/${encodeURIComponent(reminder.id)}/read`, {
+        method: "POST",
+        body: "{}",
+      });
+      reminder.read = true;
+    } catch {
+      // continue
+    }
+  }
+  updateReminderBadge();
+  renderReminders();
+}
+
+async function reconcileAction() {
+  try {
+    const data = await api("api/orders/reconcile", { method: "POST", body: "{}" });
+    showToast(
+      data.duplicates
+        ? `发现 ${data.duplicates} 个重复未支付订单，已取消 ${data.cancelled} 个`
+        : "没有发现重复未支付订单",
+    );
+    await loadReminders(true);
+    if (!els.actionModal.classList.contains("hidden")) renderActionCenter();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function showSubscriptionForm() {
+  state.showSubForm = true;
+  renderActionCenter();
+}
+
+async function saveSubscriptionAction() {
+  if (!state.quote) return;
+  const maxAmount = Number($("#subMaxAmount")?.value);
+  const runs = Number($("#subRuns")?.value);
+  const interval = Number($("#subInterval")?.value);
+  const autoOrder = Boolean($("#subAutoOrder")?.checked);
+  if (!Number.isFinite(maxAmount) || maxAmount < 1) {
+    showToast("请输入有效的金额上限", true);
+    return;
+  }
+  try {
+    await api("api/subscriptions", {
+      method: "POST",
+      body: JSON.stringify({
+        quoteId: state.quote.id,
+        maxAmountCents: Math.round(maxAmount * 100),
+        maxRunsPerDay: runs,
+        intervalMinutes: interval,
+        autoOrder,
+      }),
+    });
+    state.showSubForm = false;
+    await loadSubscriptions();
+    renderActionCenter();
+    showToast("固定套餐已保存");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function toggleSubscriptionAction(subscriptionId, enabled) {
+  try {
+    await api(`api/subscriptions/${encodeURIComponent(subscriptionId)}/toggle`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    await loadSubscriptions();
+    renderReminders();
+    showToast(enabled ? "固定套餐已开启" : "固定套餐已暂停");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function runSubscriptionAction(subscriptionId) {
+  try {
+    const data = await api(`api/subscriptions/${encodeURIComponent(subscriptionId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ autoCreate: true }),
+    });
+    state.quote = data.quote;
+    state.quoteTokens = data.tokens;
+    state.order = data.order || null;
+    state.quoteExpired = false;
+    state.showOrderConfirm = false;
+    state.showSubForm = false;
+    openModal("action");
+    renderActionCenter();
+    startQuoteTimer();
+    if (state.order) startOrderPolling();
+    await loadSubscriptions();
+    await loadReminders(true);
+    showToast(data.order ? "复购订单已创建" : "复购报价已生成，请确认订单");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function deleteSubscriptionAction(subscriptionId) {
+  if (!window.confirm("确认删除这个固定套餐？")) return;
+  try {
+    await api(`api/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" });
+    await loadSubscriptions();
+    renderReminders();
+    showToast("固定套餐已删除");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
 function bindEvents() {
   bindChipContainer(els.budgetChips, (button) => {
     if (button.dataset.budget === "custom") {
@@ -777,6 +1642,8 @@ function bindEvents() {
   els.optimizeBtn.addEventListener("click", optimizeNow);
   els.againBtn.addEventListener("click", optimizeNow);
   els.historyBtn.addEventListener("click", showHistory);
+  if (els.actionCenterBtn) els.actionCenterBtn.addEventListener("click", openActionCenter);
+  if (els.remindersBtn) els.remindersBtn.addEventListener("click", openReminders);
   els.storeBtn.addEventListener("click", () => {
     renderStoreList();
     openModal("store");
@@ -806,6 +1673,50 @@ function bindEvents() {
     if (action.dataset.action === "share") sharePlan(findPlan(planId));
     if (action.dataset.action === "clear-history") clearHistory();
   });
+  if (els.actionContent) {
+    els.actionContent.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]");
+      if (!action) return;
+      const actionName = action.dataset.action;
+      if (actionName === "retry-quote") openActionCenter();
+      if (actionName === "claim-coupon") claimCouponAction();
+      if (actionName === "show-order-confirm") showOrderConfirm();
+      if (actionName === "create-order") createOrderAction();
+      if (actionName === "unlock") unlockPrivateAction();
+      if (actionName === "refresh-order") refreshOrderAction();
+      if (actionName === "cancel-order") cancelOrderAction();
+      if (actionName === "mock-pay") mockPayAction();
+      if (actionName === "copy-quote") copyQuoteAction();
+      if (actionName === "show-sub-form") showSubscriptionForm();
+      if (actionName === "hide-sub-form") {
+        state.showSubForm = false;
+        renderActionCenter();
+      }
+      if (actionName === "save-sub") saveSubscriptionAction();
+      if (actionName === "reconcile") reconcileAction();
+      if (actionName === "toggle-sub") {
+        toggleSubscriptionAction(action.dataset.subId, action.dataset.enabled === "true");
+      }
+      if (actionName === "run-sub") runSubscriptionAction(action.dataset.subId);
+      if (actionName === "delete-sub") deleteSubscriptionAction(action.dataset.subId);
+    });
+  }
+  if (els.remindersContent) {
+    els.remindersContent.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]");
+      if (!action) return;
+      const actionName = action.dataset.action;
+      if (actionName === "mark-reminder") markReminderAction(action.dataset.reminderId);
+      if (actionName === "mark-all-read") markAllRemindersRead();
+      if (actionName === "reconcile") reconcileAction();
+      if (actionName === "reload-reminders") openReminders();
+      if (actionName === "toggle-sub") {
+        toggleSubscriptionAction(action.dataset.subId, action.dataset.enabled === "true");
+      }
+      if (actionName === "run-sub") runSubscriptionAction(action.dataset.subId);
+      if (actionName === "delete-sub") deleteSubscriptionAction(action.dataset.subId);
+    });
+  }
   els.stickyDetail.addEventListener("click", () => {
     const plan = selectedPlan();
     if (plan) openDetail(plan.id);
@@ -850,6 +1761,7 @@ async function loadBootstrap() {
       state.usePoints = defaults.usePoints !== false;
     }
     applyMode(data.mode, data.liveState);
+    state.capabilities = data.capabilities || null;
     if (els.pointsHint) {
       const points = Number(data.pointsBalance || 0);
       els.pointsHint.textContent = points > 0
@@ -860,6 +1772,7 @@ async function loadBootstrap() {
     syncStoreForMode();
     syncChips();
     renderStoreList();
+    loadReminders(true);
   } catch (error) {
     state.bootstrapped = true;
     applyMode("demo", "error");
@@ -885,6 +1798,7 @@ function init() {
   renderStoreList();
   registerServiceWorker();
   loadBootstrap();
+  state.reminderTimer = setInterval(() => loadReminders(true), 30_000);
 }
 
 init();

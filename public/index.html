@@ -24,6 +24,10 @@
       </a>
       <div class="topbar-right">
         <span class="mode-badge" id="modeBadge" title="当前数据模式">演示数据</span>
+        <button class="icon-button" id="remindersBtn" type="button" aria-label="提醒中心">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>
+          <span class="notification-badge hidden" id="reminderBadge">0</span>
+        </button>
         <button class="icon-button" id="infoBtn" type="button" aria-label="查看数据说明">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 10.6v5.1"></path><path d="M12 7.5h.01"></path></svg>
         </button>
@@ -183,11 +187,14 @@
         <div class="plan-grid" id="planCards"></div>
         <div class="results-foot">
           <div class="trust-pills">
-            <span>自动领券</span>
-            <span>真实核价口径</span>
-            <span>凑单陷阱检测</span>
+            <span>自动选券</span>
+            <span>报价快照</span>
+            <span>支付提醒</span>
           </div>
-          <button class="text-button" id="historyBtn" type="button">我的省钱记录 <span id="historyTotal">¥0</span></button>
+          <div class="results-actions">
+            <button class="text-button" id="historyBtn" type="button">我的省钱记录 <span id="historyTotal">¥0</span></button>
+            <button class="mini-button mini-button-red" id="actionCenterBtn" type="button">执行中心</button>
+          </div>
         </div>
       </section>
 
@@ -254,6 +261,22 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="actionModal" role="dialog" aria-modal="true" aria-labelledby="actionTitle">
+    <div class="modal-backdrop" data-close="action"></div>
+    <div class="modal-card modal-card-wide">
+      <button class="modal-close" type="button" data-close="action" aria-label="关闭执行中心">×</button>
+      <div id="actionContent"></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="remindersModal" role="dialog" aria-modal="true" aria-labelledby="remindersTitle">
+    <div class="modal-backdrop" data-close="reminders"></div>
+    <div class="modal-card modal-card-wide">
+      <button class="modal-close" type="button" data-close="reminders" aria-label="关闭提醒中心">×</button>
+      <div id="remindersContent"></div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="storeModal" role="dialog" aria-modal="true" aria-labelledby="storeTitle">
     <div class="modal-backdrop" data-close="store"></div>
     <div class="modal-card">
@@ -274,7 +297,8 @@
         <p><strong>演示模式：</strong>菜单、价格、券和积分均为示例数据，用于展示完整交互；不会读取账号，也不会下单。</p>
         <p><strong>实时模式：</strong>服务端配置麦当劳 MCP Token 后，会查询真实门店、菜单和门店券，并用官方 <code>calculate-price</code> 核价；Token 不会下发到浏览器。</p>
         <p><strong>价格口径：</strong>页面优先展示整单实付，包含配送费、包装费、券和积分抵扣；最终以麦当劳官方结算页为准。</p>
-        <p><strong>安全边界：</strong>当前版本是只读省钱助手，不自动领券、不自动提交订单，支付请在官方渠道完成。</p>
+        <p><strong>执行模式：</strong>演示模式可以模拟领券、创建待支付订单、取消和模拟支付，不会写入真实账户；实时写操作只在单用户私有模式解锁后开启，并受金额、频次和 kill switch 限制。</p>
+        <p><strong>安全边界：</strong>不自动支付，支付仍在麦当劳官方渠道完成；已支付订单不自动取消或退款，请走官方客服。</p>
       </div>
     </div>
   </div>

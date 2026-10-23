@@ -1,4 +1,5 @@
 import http from "node:http";
+import crypto from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -6,6 +7,28 @@ import { fileURLToPath } from "node:url";
 
 import { DEMO_DATA, DEMO_DEFAULTS, DEMO_POINTS, DEMO_STORES, DEMO_ITEMS, DEMO_COMBOS, DEMO_COUPONS } from "./lib/demo-data.js";
 import { optimize } from "./lib/optimizer.js";
+import {
+  ActionError,
+  createQuote,
+  claimCoupon,
+  createOrder,
+  refreshOrder,
+  cancelOrder,
+  mockPay,
+  reconcileOrders,
+  listOrders,
+  createSubscription,
+  toggleSubscription,
+  deleteSubscription,
+  listSubscriptions,
+  dueSubscriptions,
+  markSubscriptionRun,
+  getAccountData,
+  syncCouponReminders,
+  listReminders,
+  markReminderRead,
+  listAudit,
+} from "./lib/action-service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,12 +55,27 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PUBLIC_DIR = path.join(__dirname, "public");
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const PORT = Number(process.env.PORT || 8899);
 const HOST = process.env.HOST || "127.0.0.1";
 const MCD_MCP_TOKEN = (process.env.MCD_MCP_TOKEN || "").trim();
 const ENABLE_LIVE = process.env.ENABLE_LIVE === "true";
 const ENABLE_ORDER = process.env.ENABLE_ORDER === "true";
+const DEMO_WRITE = process.env.DEMO_WRITE !== "false";
+const SINGLE_USER_MODE = process.env.SINGLE_USER_MODE === "true";
+const ENABLE_WRITE = process.env.ENABLE_WRITE === "true";
+const ENABLE_COUPON_CLAIM = process.env.ENABLE_COUPON_CLAIM === "true";
+const ENABLE_ORDER_CREATE =
+  process.env.ENABLE_ORDER_CREATE === "true" || ENABLE_ORDER;
+const ENABLE_AUTO_REPURCHASE = process.env.ENABLE_AUTO_REPURCHASE === "true";
+const ENABLE_AUTO_CANCEL_UNPAID = process.env.ENABLE_AUTO_CANCEL_UNPAID === "true";
+const MAX_ORDER_CENTS = Math.max(100, Number(process.env.MAX_ORDER_CENTS || 5000));
+const MAX_DAILY_ORDERS = Math.max(1, Number(process.env.MAX_DAILY_ORDERS || 5));
+const SUBSCRIPTION_TICK_MS = Math.max(5000, Number(process.env.SUBSCRIPTION_TICK_MS || 60000));
+const WRITE_PASSCODE = (process.env.WRITE_PASSCODE || "").trim();
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+const WRITE_COOKIE = "ms_private";
+const SESSION_TTL_MS = 8 * 3600_000;
 
 const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
@@ -120,6 +158,126 @@ function clientIp(req) {
     return forwarded.split(",")[0].trim();
   }
   return req.socket.remoteAddress || "unknown";
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (typeof header !== "string" || !header) return {};
+  const result = {};
+  for (const pair of header.split(";")) {
+    const index = pair.indexOf("=");
+    if (index < 0) continue;
+    result[pair.slice(0, index).trim()] = pair.slice(index + 1).trim();
+  }
+  return result;
+}
+
+function createSessionToken() {
+  const payload = Buffer.from(
+    JSON.stringify({ scope: "write", exp: Date.now() + SESSION_TTL_MS }),
+  ).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifySessionToken(token) {
+  if (typeof token !== "string" || !token.includes(".")) return false;
+  const [payload, signature] = token.split(".");
+  const expected = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(payload)
+    .digest("base64url");
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return data.scope === "write" && Number(data.exp) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function isUnlocked(req) {
+  return verifySessionToken(parseCookies(req)[WRITE_COOKIE]);
+}
+
+function writeCookie(req) {
+  const secure = req.headers["x-forwarded-proto"] === "https";
+  return `${WRITE_COOKIE}=${createSessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? "; Secure" : ""}`;
+}
+
+function clearWriteCookie() {
+  return `${WRITE_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+}
+
+function capabilities(req) {
+  const mode = liveClient ? "live" : "demo";
+  const unlocked = isUnlocked(req);
+  const liveReady =
+    Boolean(liveClient) && ENABLE_WRITE && SINGLE_USER_MODE && Boolean(WRITE_PASSCODE);
+  const demoWrite = mode === "demo" && DEMO_WRITE;
+  const couponClaim = demoWrite || (liveReady && ENABLE_COUPON_CLAIM && unlocked);
+  const orderCreate = demoWrite || (liveReady && ENABLE_ORDER_CREATE && unlocked);
+  const autoRepurchase = demoWrite || (liveReady && ENABLE_AUTO_REPURCHASE && unlocked);
+  return {
+    mode,
+    live: Boolean(liveClient),
+    writeMode: demoWrite ? "demo" : liveReady ? "private" : "disabled",
+    demoWrite,
+    liveWrite: liveReady,
+    unlocked,
+    singleUser: SINGLE_USER_MODE,
+    couponClaim,
+    orderCreate,
+    autoRepurchase,
+    order: orderCreate,
+    autoCancelUnpaid: demoWrite || (liveReady && ENABLE_AUTO_CANCEL_UNPAID),
+    maxOrderCents: MAX_ORDER_CENTS,
+    maxDailyOrders: MAX_DAILY_ORDERS,
+    writePasscodeRequired: liveReady && !unlocked,
+    nutrition: true,
+  };
+}
+
+function requireWrite(req, feature) {
+  if (!liveClient) {
+    if (!DEMO_WRITE) {
+      throw new ActionError("WRITE_DISABLED", "演示执行已关闭，请配置服务端 Token 并使用私有模式", 403);
+    }
+    return { mode: "demo", live: false };
+  }
+  if (!ENABLE_WRITE || !SINGLE_USER_MODE) {
+    throw new ActionError("WRITE_DISABLED", "实时写操作未开启，请使用单用户私有模式", 403);
+  }
+  if (!WRITE_PASSCODE) {
+    throw new ActionError("WRITE_LOCKED", "未配置私有模式口令，写操作已锁定", 403);
+  }
+  if (!isUnlocked(req)) {
+    throw new ActionError("WRITE_LOCKED", "请先解锁单用户私有模式", 401);
+  }
+  if (feature === "coupon" && !ENABLE_COUPON_CLAIM) {
+    throw new ActionError("FEATURE_DISABLED", "自动领券未开启", 403);
+  }
+  if ((feature === "order" || feature === "auto") && !ENABLE_ORDER_CREATE) {
+    throw new ActionError("FEATURE_DISABLED", "创建订单未开启", 403);
+  }
+  if (feature === "auto" && !ENABLE_AUTO_REPURCHASE) {
+    throw new ActionError("FEATURE_DISABLED", "自动复购未开启", 403);
+  }
+  return { mode: "live", live: true };
+}
+
+function sendActionError(res, error) {
+  if (error instanceof ActionError) {
+    sendJson(res, error.status, { ok: false, code: error.code, error: error.message });
+    return;
+  }
+  console.error("[maimen-save-one] action error:", error);
+  sendJson(res, 500, { ok: false, error: "服务器内部错误" });
 }
 
 const buckets = new Map();
@@ -216,6 +374,89 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
+async function bodyOr400(req, res) {
+  try {
+    return await readJson(req);
+  } catch (error) {
+    sendJson(res, 400, { ok: false, error: error.message });
+    return null;
+  }
+}
+
+async function runOptimize(input) {
+  if (liveClient && liveOptimize) {
+    try {
+      return await liveOptimize(input, liveClient);
+    } catch (error) {
+      console.error(
+        "[maimen-save-one] live optimize failed:",
+        error instanceof Error ? error.message : error,
+      );
+      const result = optimize(input, DEMO_DATA);
+      result.warnings = [
+        "实时接口暂不可用，已切换到演示数据；请稍后重试。",
+        ...result.warnings,
+      ];
+      result.liveError = true;
+      return result;
+    }
+  }
+  return optimize(input, DEMO_DATA);
+}
+
+async function runSubscriptionQuote(subscription) {
+  const result = await runOptimize(subscription.input);
+  const plan =
+    result.plans.find((item) => item.label === subscription.plan?.label) ||
+    result.plans.find((item) => item.id === subscription.plan?.id) ||
+    result.plans[0];
+  if (!plan) throw new ActionError("NO_PLAN", "当前条件下没有可执行的固定套餐", 422);
+  if (plan.price.finalCents > subscription.caps.maxAmountCents) {
+    throw new ActionError(
+      "AMOUNT_LIMIT",
+      `复购金额 ${(plan.price.finalCents / 100).toFixed(2)} 元超过上限 ${(subscription.caps.maxAmountCents / 100).toFixed(2)} 元`,
+      403,
+    );
+  }
+  const quote = await createQuote({ result, planId: plan.id, source: result.mode });
+  return { ...quote, plan, result };
+}
+
+async function runSubscriptionOnce(subscription, { autoCreate }) {
+  try {
+    const result = await runSubscriptionQuote(subscription);
+    let order = null;
+    if (autoCreate) {
+      const created = await createOrder({
+        quoteId: result.quote.id,
+        system: true,
+        live: Boolean(liveClient),
+        mcp: liveClient,
+        caps: {
+          maxAmountCents: subscription.caps.maxAmountCents,
+          maxDailyOrders: MAX_DAILY_ORDERS,
+        },
+        subscriptionId: subscription.id,
+      });
+      order = created.order;
+    }
+    const updated = await markSubscriptionRun(subscription.id, {
+      quoteId: result.quote.id,
+      orderId: order?.id || null,
+      success: true,
+    });
+    return { ...result, order, subscription: updated };
+  } catch (error) {
+    await markSubscriptionRun(subscription.id, {
+      quoteId: null,
+      orderId: null,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 async function handleApi(req, res, pathname) {
   if (!allowRequest(clientIp(req))) {
     sendJson(res, 429, { ok: false, error: "请求过于频繁，请稍后再试" });
@@ -231,9 +472,16 @@ async function handleApi(req, res, pathname) {
       mode: liveClient ? "live" : "demo",
       liveState,
       liveError: liveState === "error" ? "实时接口暂不可用" : "",
+      writeMode: capabilities(req).writeMode,
+      singleUser: SINGLE_USER_MODE,
       uptimeSeconds: Math.round(process.uptime()),
       time: new Date().toISOString(),
     });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/capabilities") {
+    sendJson(res, 200, { ok: true, ...capabilities(req) });
     return true;
   }
 
@@ -252,11 +500,7 @@ async function handleApi(req, res, pathname) {
         combos: DEMO_COMBOS.length,
         coupons: DEMO_COUPONS.length,
       },
-      capabilities: {
-        live: Boolean(liveClient),
-        order: ENABLE_ORDER && Boolean(liveClient),
-        nutrition: true,
-      },
+      capabilities: capabilities(req),
       generatedAt: new Date().toISOString(),
     });
     return true;
@@ -271,26 +515,13 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     try {
-      let result;
-      if (liveClient && liveOptimize) {
-        try {
-          result = await liveOptimize(input, liveClient);
-        } catch (error) {
-          console.error("[maimen-save-one] live optimize failed:", error instanceof Error ? error.message : error);
-          result = optimize(input, DEMO_DATA);
-          result.warnings = [
-            "实时接口暂不可用，已切换到演示数据；请稍后重试。",
-            ...result.warnings,
-          ];
-          result.liveError = true;
-        }
-      } else {
-        result = optimize(input, DEMO_DATA);
-      }
+      const result = await runOptimize(input);
+      const caps = capabilities(req);
       result.deployment = {
         mode: result.mode,
         liveState,
-        orderEnabled: ENABLE_ORDER && Boolean(liveClient),
+        orderEnabled: caps.orderCreate,
+        writeMode: caps.writeMode,
         serverTime: new Date().toISOString(),
       };
       sendJson(res, 200, result);
@@ -313,12 +544,291 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (req.method === "POST" && pathname === "/api/private/unlock") {
+    if (!SINGLE_USER_MODE || !WRITE_PASSCODE) {
+      sendJson(res, 403, {
+        ok: false,
+        code: "PRIVATE_MODE_DISABLED",
+        error: "当前未开启单用户私有模式，或未配置 WRITE_PASSCODE",
+      });
+      return true;
+    }
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const supplied = Buffer.from(String(body.passcode || ""));
+    const expected = Buffer.from(WRITE_PASSCODE);
+    const valid =
+      supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+    if (!valid) {
+      sendJson(res, 401, { ok: false, code: "BAD_PASSCODE", error: "私有模式口令不正确" });
+      return true;
+    }
+    sendJson(
+      res,
+      200,
+      { ok: true, unlocked: true, message: "私有模式已解锁，写操作仍受限额与频次控制" },
+      { "Set-Cookie": writeCookie(req) },
+    );
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/private/lock") {
+    sendJson(res, 200, { ok: true, unlocked: false }, { "Set-Cookie": clearWriteCookie() });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/quote") {
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const input = body.input && typeof body.input === "object" ? body.input : body;
+    const result = await runOptimize(input);
+    const quote = await createQuote({
+      result,
+      planId: body.planId,
+      source: result.mode,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      ...quote,
+      source: result.mode,
+      capabilities: capabilities(req),
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/coupons/claim") {
+    const access = requireWrite(req, "coupon");
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const result = await claimCoupon({
+      quoteId: body.quoteId,
+      token: body.token,
+      live: access.live,
+      mcp: liveClient,
+    });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/orders") {
+    sendJson(res, 200, { ok: true, orders: await listOrders() });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/orders") {
+    const access = requireWrite(req, "order");
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const result = await createOrder({
+      quoteId: body.quoteId,
+      token: body.token,
+      live: access.live,
+      mcp: liveClient,
+      caps: {
+        maxAmountCents: MAX_ORDER_CENTS,
+        maxDailyOrders: MAX_DAILY_ORDERS,
+      },
+    });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/orders/reconcile") {
+    const access = requireWrite(req, "order");
+    const autoCancel =
+      access.mode === "demo" ? true : ENABLE_AUTO_CANCEL_UNPAID;
+    const result = await reconcileOrders({
+      live: access.live,
+      mcp: liveClient,
+      autoCancel,
+    });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    return true;
+  }
+
+  let match = pathname.match(/^\/api\/orders\/([^/]+)\/mock-pay$/);
+  if (req.method === "POST" && match) {
+    if (liveClient) {
+      throw new ActionError("MOCK_PAY_FORBIDDEN", "实时模式不允许模拟支付", 403);
+    }
+    requireWrite(req, "order");
+    const result = await mockPay(decodeURIComponent(match[1]));
+    sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/orders\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && match) {
+    const access = requireWrite(req, "order");
+    const result = await cancelOrder(decodeURIComponent(match[1]), {
+      live: access.live,
+      mcp: liveClient,
+    });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/orders\/([^/]+)$/);
+  if (req.method === "GET" && match) {
+    const result = await refreshOrder(decodeURIComponent(match[1]), {
+      live: Boolean(liveClient),
+      mcp: liveClient,
+    });
+    sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/reminders") {
+    sendJson(res, 200, { ok: true, reminders: await listReminders() });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/reminders\/([^/]+)\/read$/);
+  if (req.method === "POST" && match) {
+    const reminder = await markReminderRead(decodeURIComponent(match[1]));
+    sendJson(res, 200, { ok: true, reminder });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/account") {
+    let account = null;
+    let source = "demo";
+    const warnings = [];
+    if (liveClient) {
+      try {
+        account = await liveClient.accountData();
+        source = "live";
+        warnings.push(...(account.warnings || []));
+      } catch (error) {
+        warnings.push("实时账户暂不可用，已展示演示权益");
+      }
+    }
+    if (!account) {
+      account = await getAccountData();
+      source = "demo";
+    }
+    await syncCouponReminders(account.coupons || []);
+    sendJson(res, 200, { ok: true, source, account, warnings });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/subscriptions") {
+    sendJson(res, 200, { ok: true, subscriptions: await listSubscriptions() });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/subscriptions") {
+    requireWrite(req, "order");
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    if (body.autoOrder && !capabilities(req).autoRepurchase) {
+      throw new ActionError("FEATURE_DISABLED", "自动复购未开启，请先配置单用户私有模式", 403);
+    }
+    const subscription = await createSubscription({
+      quoteId: body.quoteId,
+      maxAmountCents: body.maxAmountCents,
+      maxRunsPerDay: body.maxRunsPerDay,
+      intervalMinutes: body.intervalMinutes,
+      autoOrder: Boolean(body.autoOrder),
+    });
+    sendJson(res, 200, { ok: true, subscription, capabilities: capabilities(req) });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/subscriptions\/([^/]+)\/toggle$/);
+  if (req.method === "POST" && match) {
+    const id = decodeURIComponent(match[1]);
+    const subscriptions = await listSubscriptions();
+    const subscription = subscriptions.find((item) => item.id === id);
+    if (!subscription) throw new ActionError("SUBSCRIPTION_NOT_FOUND", "固定套餐不存在", 404);
+    requireWrite(req, "order");
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    if (body.enabled && subscription.autoOrder) requireWrite(req, "auto");
+    const updated = await toggleSubscription(id, Boolean(body.enabled));
+    sendJson(res, 200, { ok: true, subscription: updated, capabilities: capabilities(req) });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/subscriptions\/([^/]+)\/run$/);
+  if (req.method === "POST" && match) {
+    const id = decodeURIComponent(match[1]);
+    requireWrite(req, "order");
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const subscriptions = await listSubscriptions();
+    const subscription = subscriptions.find((item) => item.id === id);
+    if (!subscription) throw new ActionError("SUBSCRIPTION_NOT_FOUND", "固定套餐不存在", 404);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const runsToday = (subscription.runs || []).filter(
+      (run) => Date.parse(run.ts) >= today.getTime(),
+    ).length;
+    if (runsToday >= subscription.caps.maxRunsPerDay) {
+      throw new ActionError("DAILY_LIMIT", "今日复购次数已达上限", 429);
+    }
+    const result = await runSubscriptionOnce(subscription, {
+      autoCreate: Boolean(body.autoCreate),
+    });
+    sendJson(res, 200, {
+      ok: true,
+      quote: result.quote,
+      tokens: result.tokens,
+      plan: result.plan,
+      order: result.order,
+      subscription: result.subscription,
+      capabilities: capabilities(req),
+    });
+    return true;
+  }
+
+  match = pathname.match(/^\/api\/subscriptions\/([^/]+)$/);
+  if (req.method === "DELETE" && match) {
+    requireWrite(req, "order");
+    const result = await deleteSubscription(decodeURIComponent(match[1]));
+    sendJson(res, 200, { ok: true, ...result });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/audit") {
+    sendJson(res, 200, { ok: true, audit: await listAudit() });
+    return true;
+  }
+
   if (req.method === "GET" && pathname === "/api/version") {
     sendJson(res, 200, { ok: true, version: APP_VERSION, mode: liveClient ? "live" : "demo" });
     return true;
   }
 
   return false;
+}
+
+let schedulerBusy = false;
+async function processSubscriptions() {
+  if (schedulerBusy) return;
+  if (!liveClient && !DEMO_WRITE) return;
+  if (liveClient && !(ENABLE_WRITE && SINGLE_USER_MODE && ENABLE_AUTO_REPURCHASE)) {
+    return;
+  }
+  schedulerBusy = true;
+  try {
+    const subscriptions = await dueSubscriptions();
+    for (const subscription of subscriptions) {
+      try {
+        const result = await runSubscriptionOnce(subscription, { autoCreate: true });
+        console.log(
+          `[maimen-save-one] subscription ${subscription.id} ran -> ${result.order?.id || result.quote.id}`,
+        );
+      } catch (error) {
+        console.error(
+          `[maimen-save-one] subscription ${subscription.id} failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+  } finally {
+    schedulerBusy = false;
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -336,8 +846,12 @@ const server = http.createServer(async (req, res) => {
       const handled = await handleApi(req, res, pathname);
       if (!handled) sendJson(res, 404, { ok: false, error: "接口不存在" });
     } catch (error) {
-      console.error("[maimen-save-one] request error:", error);
-      sendJson(res, 500, { ok: false, error: "服务器内部错误" });
+      if (error instanceof ActionError) {
+        sendActionError(res, error);
+      } else {
+        console.error("[maimen-save-one] request error:", error);
+        sendJson(res, 500, { ok: false, error: "服务器内部错误" });
+      }
     }
     return;
   }
@@ -352,8 +866,20 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[maimen-save-one] listening on http://${HOST}:${PORT} mode=${liveClient ? "live" : "demo"}`);
-  initLive().then(() => {
+  initLive().then(async () => {
     console.log(`[maimen-save-one] live state: ${liveState}`);
+    try {
+      if (liveClient) {
+        const account = await liveClient.accountData();
+        await syncCouponReminders(account.coupons || []);
+      } else {
+        const account = await getAccountData();
+        await syncCouponReminders(account.coupons || []);
+      }
+    } catch (error) {
+      console.error("[maimen-save-one] reminder init failed:", error);
+    }
+    setInterval(processSubscriptions, SUBSCRIPTION_TICK_MS).unref();
   });
 });
 
