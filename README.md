@@ -1,27 +1,27 @@
-# 省一单 · M-SAVE ONE
+# 麦门省一单 · M-SAVE ONE
 
 > 麦当劳一屏省钱助手：打开就省，不用配置，不用比价，不用来回跳转。
 
 **M-CODE 2026 麦当劳程序员创意开发大赛参赛作品 · 省钱赛道整合方案**
 
-![省一单界面](docs/screenshot.png)
+![麦门省一单界面](docs/screenshot.png)
 
 ## 在线体验
 
-- 演示站：<http://47.94.222.72/save/>
+- 演示站：<http://47.94.222.72/maimen/>
 - 当前为演示数据模式；实时 MCP 配置见 [MCP_INTEGRATION.md](./MCP_INTEGRATION.md)。
 
 ## 参赛状态
 
 - 报名 Issue：[M-China/mcd-developer-innovation-challenge#1180](https://github.com/M-China/mcd-developer-innovation-challenge/issues/1180)
-- 线上演示：<http://47.94.222.72/save/>
+- 线上演示：<http://47.94.222.72/maimen/>
 - 当前部署为演示数据模式；配置服务端 MCP Token 后可切换实时数据。
 
 ---
 
 ## 一、产品定位
 
-「省一单」不是又一个券库，也不是点餐 App 的替代品。它把麦当劳点餐前最费时的四件事——**查门店、领券、比价、核价**——压缩成**一个输入、一次点击、三套方案**。
+「麦门省一单」不是又一个券库，也不是点餐 App 的替代品。它把麦当劳点餐前最费时的四件事——**查门店、领券、比价、核价**——压缩成**一个输入、一次点击、三套方案**。
 
 - **一个入口**：预算、目标、人数、忌口在一个页面里完成。
 - **一个引擎**：预算 / 热量 / 蛋白质 / 人数 / 忌口同时进入确定性优化器。
@@ -31,13 +31,13 @@
 
 **目标用户**：价格敏感的学生 / 上班族、健身控卡人群、2–4 人小团队、需要快速决定“今天怎么点”的普通用户。
 
-**一句话差异**：别人帮你查“有哪些券”，省一单直接告诉你“这一单怎么买、用哪张券、凑不凑、最后付多少”。
+**一句话差异**：别人帮你查“有哪些券”，麦门省一单直接告诉你“这一单怎么买、用哪张券、凑不凑、最后付多少”。
 
 ---
 
 ## 二、前十名省钱项目的能力整合
 
-| 来源项目 | 被整合的能力 | 在「省一单」中的落点 |
+| 来源项目 | 被整合的能力 | 在「麦门省一单」中的落点 |
 |---|---|---|
 | mcd-saver-strategist | 四路券池合并 + 组合优化 + 官方核价闭环 | 券池归一化、候选枚举、`calculate-price` 核价 |
 | mcd-budget-meal | 预算内多份餐单、换饮料重算 | 三套预算内方案、加购/替换后的重新求解 |
@@ -143,7 +143,7 @@ Node.js 18 HTTP 服务（无框架）
 ### 目录
 
 ```text
-save-one/
+maimen-save-one/
   server.js                 # HTTP 服务、API、静态资源、限流与安全头
   lib/
     demo-data.js            # 演示门店、菜单、套餐、券、积分
@@ -167,7 +167,7 @@ save-one/
 ## 六、本地运行
 
 ```bash
-cd save-one
+cd maimen-save-one
 cp .env.example .env
 # 可选：编辑 .env，填入 MCD_MCP_TOKEN 并设置 ENABLE_LIVE=true
 npm install                 # 仅实时 MCP 模式需要
@@ -210,7 +210,7 @@ chown mcdsaver:mcdsaver .env
 # 4. systemd
 cat >/etc/systemd/system/mcd-saver.service <<'EOF'
 [Unit]
-Description=Save One - McDonald's savings assistant
+Description=Maimen Save One - McDonald's savings assistant
 After=network.target
 
 [Service]
@@ -234,10 +234,10 @@ EOF
 systemctl daemon-reload
 systemctl enable --now mcd-saver
 
-# 5. Nginx（示例：挂在 /save/ 路径）
+# 5. Nginx（示例：挂在 /maimen/ 路径）
 # 在现有 server 块中加入：
-# location = /save { return 302 /save/; }
-# location /save/ {
+# location = /maimen { return 302 /maimen/; }
+# location /maimen/ {
 #   proxy_pass http://127.0.0.1:8899/;
 #   proxy_http_version 1.1;
 #   proxy_set_header Host $host;
@@ -297,4 +297,4 @@ npm test
 - `MCP_INTEGRATION.md`：MCP Server、Tool、调用流程、业务价值与降级策略。
 - 本 README：项目介绍、安装方法、使用示例、目标用户与部署说明。
 
-**省一单：把省钱这件事，做成一个动作。**
+**麦门省一单：把省钱这件事，做成一个动作。**

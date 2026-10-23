@@ -1,9 +1,9 @@
 {
-  "name": "save-one",
+  "name": "maimen-save-one",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "省一单 · 麦当劳一屏省钱助手（M-CODE 2026 参赛项目）",
+  "description": "麦门省一单 · 麦当劳一屏省钱助手（M-CODE 2026 参赛项目）",
   "license": "MIT",
   "engines": {
     "node": ">=18"

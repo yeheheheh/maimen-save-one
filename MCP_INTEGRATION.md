@@ -27,7 +27,7 @@
 浏览器
   │  只发送预算 / 目标 / 人数 / 忌口 / 门店
   ▼
-省一单 Node 服务端
+麦门省一单 Node 服务端
   │  1. query-nearby-stores  定位门店
   │  2. query-meals          拉取在售菜单
   │  3. query-store-coupons  拉取当前门店可用券

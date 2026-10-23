@@ -1,8 +1,8 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-const PREF_KEY = "save-one-prefs-v1";
-const HISTORY_KEY = "save-one-history-v1";
+const PREF_KEY = "maimen-save-one-prefs-v1";
+const HISTORY_KEY = "maimen-save-one-history-v1";
 
 const state = {
   dataMode: "demo",
@@ -549,7 +549,7 @@ function openDetail(planId) {
 function planText(plan) {
   const store = state.result?.store;
   const lines = [
-    "省一单 · 今日最省方案",
+    "麦门省一单 · 今日最省方案",
     `门店：${store?.name || "附近门店"}`,
     `方案：${plan.label} · ${money(plan.price.finalCents)}${plan.people > 1 ? `（${money(plan.price.perPersonCents)}/人）` : ""}`,
     `原价：${money(plan.price.referenceCents)}｜省：${money(plan.price.savingsCents)}`,
@@ -558,7 +558,7 @@ function planText(plan) {
     plan.coupon ? `用券：${plan.coupon.name}（−${money(plan.coupon.discountCents)}）` : "用券：无",
     plan.price.pointsDiscountCents ? `积分抵扣：−${money(plan.price.pointsDiscountCents)}` : "",
     `数据：${plan.dataSource === "live" ? "实时 MCP" : "演示数据"}，最终以官方结算页为准。`,
-    "来自：省一单（M-CODE 2026 参赛作品）",
+    "来自：麦门省一单（M-CODE 2026 参赛作品）",
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -604,7 +604,7 @@ async function sharePlan(plan) {
   const text = planText(plan);
   try {
     if (navigator.share) {
-      await navigator.share({ title: "省一单 · 今日最省方案", text, url: location.href });
+      await navigator.share({ title: "麦门省一单 · 今日最省方案", text, url: location.href });
       return;
     }
   } catch {

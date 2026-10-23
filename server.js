@@ -84,11 +84,11 @@ async function initLive() {
     liveOptimize = module.optimizeLive;
     liveClient = await module.createLiveClient(MCD_MCP_TOKEN);
     liveState = "connected";
-    console.log("[mcd-saver] live MCP connected");
+    console.log("[maimen-save-one] live MCP connected");
   } catch (error) {
     liveState = "error";
     liveError = error instanceof Error ? error.message : String(error);
-    console.error("[mcd-saver] live MCP unavailable:", liveError);
+    console.error("[maimen-save-one] live MCP unavailable:", liveError);
   }
 }
 
@@ -225,8 +225,8 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, {
       ok: true,
-      app: "save-one",
-      name: "省一单",
+      app: "maimen-save-one",
+      name: "麦门省一单",
       version: APP_VERSION,
       mode: liveClient ? "live" : "demo",
       liveState,
@@ -240,7 +240,7 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && pathname === "/api/bootstrap") {
     sendJson(res, 200, {
       ok: true,
-      app: "save-one",
+      app: "maimen-save-one",
       version: APP_VERSION,
       mode: liveClient ? "live" : "demo",
       liveState,
@@ -276,7 +276,7 @@ async function handleApi(req, res, pathname) {
         try {
           result = await liveOptimize(input, liveClient);
         } catch (error) {
-          console.error("[mcd-saver] live optimize failed:", error instanceof Error ? error.message : error);
+          console.error("[maimen-save-one] live optimize failed:", error instanceof Error ? error.message : error);
           result = optimize(input, DEMO_DATA);
           result.warnings = [
             "实时接口暂不可用，已切换到演示数据；请稍后重试。",
@@ -336,7 +336,7 @@ const server = http.createServer(async (req, res) => {
       const handled = await handleApi(req, res, pathname);
       if (!handled) sendJson(res, 404, { ok: false, error: "接口不存在" });
     } catch (error) {
-      console.error("[mcd-saver] request error:", error);
+      console.error("[maimen-save-one] request error:", error);
       sendJson(res, 500, { ok: false, error: "服务器内部错误" });
     }
     return;
@@ -351,14 +351,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[mcd-saver] listening on http://${HOST}:${PORT} mode=${liveClient ? "live" : "demo"}`);
+  console.log(`[maimen-save-one] listening on http://${HOST}:${PORT} mode=${liveClient ? "live" : "demo"}`);
   initLive().then(() => {
-    console.log(`[mcd-saver] live state: ${liveState}`);
+    console.log(`[maimen-save-one] live state: ${liveState}`);
   });
 });
 
 async function shutdown(signal) {
-  console.log(`[mcd-saver] shutting down (${signal})`);
+  console.log(`[maimen-save-one] shutting down (${signal})`);
   server.close();
   if (liveClient) {
     try {

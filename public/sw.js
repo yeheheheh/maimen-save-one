@@ -1,4 +1,4 @@
-const CACHE_NAME = "save-one-v1";
+const CACHE_NAME = "maimen-save-one-v1";
 const ASSETS = [
   "./",
   "./index.html",
