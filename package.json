@@ -1,0 +1,18 @@
+{
+  "name": "save-one",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "省一单 · 麦当劳一屏省钱助手（M-CODE 2026 参赛项目）",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/optimizer.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}

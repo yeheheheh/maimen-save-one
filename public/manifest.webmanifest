@@ -1,0 +1,27 @@
+{
+  "name": "省一单 · 麦当劳一屏省钱助手",
+  "short_name": "省一单",
+  "description": "打开就省。自动查门店、领券、比价、核价，一次给出三套方案。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF8EC",
+  "theme_color": "#DA291C",
+  "categories": ["food", "shopping", "utilities"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
