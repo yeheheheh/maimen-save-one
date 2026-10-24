@@ -324,11 +324,13 @@ function sendActionError(res, error) {
 }
 
 const buckets = new Map();
-function allowRequest(ip, limit = 60, windowMs = 60_000) {
+// 按「作用域 + IP」分桶：绑定接口的 5 次/分钟不应被普通请求挤占。
+function allowRequest(ip, limit = 60, windowMs = 60_000, scope = "default") {
   const now = Date.now();
-  const bucket = buckets.get(ip);
+  const key = `${scope}:${ip}`;
+  const bucket = buckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
-    buckets.set(ip, { count: 1, resetAt: now + windowMs });
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
     return true;
   }
   bucket.count += 1;
@@ -590,7 +592,7 @@ async function handleApi(req, res, pathname) {
       throw new ActionError("SETUP_DISABLED", "当前部署已关闭页面绑定，请联系部署者", 403);
     }
     if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
-    if (!allowRequest(clientIp(req), 5, 60_000)) {
+    if (!allowRequest(clientIp(req), 5, 60_000, "bind")) {
       sendJson(res, 429, { ok: false, code: "RATE_LIMITED", error: "绑定太频繁，请 1 分钟后再试" });
       return true;
     }
@@ -701,7 +703,7 @@ async function handleApi(req, res, pathname) {
       return true;
     }
     try {
-      const result = await runOptimize(input);
+      const result = await runOptimize(input, ctx);
       const caps = capabilities(ctx);
       result.deployment = {
         mode: result.mode,
