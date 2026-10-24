@@ -32,17 +32,38 @@ const state = {
   accountSource: "demo",
   accountWarnings: [],
   subscriptions: [],
-  actionLoading: false,
-  showOrderConfirm: false,
-  showSubForm: false,
   quoteExpired: false,
   orderPollStarted: 0,
   orderPollTimer: null,
-  quoteTimer: null,
   reminderTimer: null,
   toastTimer: null,
   loadingTimer: null,
   lastFocus: null,
+  live: {
+    status: null,
+    busy: false,
+    revealed: false,
+  },
+  steward: {
+    view: null,
+    failed: false,
+    phase: "hidden",
+    confirmOpen: false,
+    busy: false,
+    refreshLock: false,
+    showSubForm: false,
+    tickTimer: null,
+    lastReconcileAt: 0,
+    auto: {
+      autoPrepare: true,
+      autoClaim: true,
+      autoRefresh: true,
+      autoPoll: true,
+      autoReconcile: true,
+    },
+    lastRunAt: {},
+    gateNote: {},
+  },
 };
 
 const els = {
@@ -73,13 +94,17 @@ const els = {
   againBtn: $("#againBtn"),
   historyBtn: $("#historyBtn"),
   historyTotal: $("#historyTotal"),
-  actionCenterBtn: $("#actionCenterBtn"),
-  actionModal: $("#actionModal"),
-  actionContent: $("#actionContent"),
+  stewardBtn: $("#stewardBtn"),
+  stewardModal: $("#stewardModal"),
+  stewardContent: $("#stewardContent"),
+  stewardStrip: $("#stewardStrip"),
+  stewardStripTitle: $("#stewardStripTitle"),
+  stewardStripMeta: $("#stewardStripMeta"),
+  stewardPrimaryBtn: $("#stewardPrimaryBtn"),
+  stewardOpenBtn: $("#stewardOpenBtn"),
+  stewardConfirm: $("#stewardConfirm"),
   remindersBtn: $("#remindersBtn"),
   reminderBadge: $("#reminderBadge"),
-  remindersModal: $("#remindersModal"),
-  remindersContent: $("#remindersContent"),
   detailModal: $("#detailModal"),
   storeModal: $("#storeModal"),
   infoModal: $("#infoModal"),
@@ -88,9 +113,17 @@ const els = {
   stickyBar: $("#stickyBar"),
   stickyPrice: $("#stickyPrice"),
   stickyDetail: $("#stickyDetail"),
-  stickyCopy: $("#stickyCopy"),
+  stickyOrder: $("#stickyOrder"),
   infoBtn: $("#infoBtn"),
   footerInfoBtn: $("#footerInfoBtn"),
+  liveSetup: $("#liveSetup"),
+  livePill: $("#livePill"),
+  liveForm: $("#liveForm"),
+  liveToken: $("#liveToken"),
+  liveReveal: $("#liveReveal"),
+  liveSave: $("#liveSave"),
+  liveDisconnect: $("#liveDisconnect"),
+  liveFeedback: $("#liveFeedback"),
 };
 
 function escapeHtml(value) {
@@ -151,6 +184,7 @@ function applyMode(mode, liveState = "") {
     : liveState === "error"
       ? "实时接口暂不可用，当前使用演示数据"
       : "当前使用演示数据";
+  renderStewardStrip();
 }
 
 function loadPrefs() {
@@ -449,16 +483,16 @@ function planCardHtml(plan) {
 }
 
 function renderResult(data) {
-  if (!els.actionModal.classList.contains("hidden")) closeModal("action");
   stopOrderPolling();
-  clearInterval(state.quoteTimer);
-  state.quoteTimer = null;
+  clearInterval(state.steward.tickTimer);
+  state.steward.tickTimer = null;
   state.quote = null;
   state.quoteTokens = null;
   state.order = null;
   state.quoteExpired = false;
-  state.showOrderConfirm = false;
-  state.showSubForm = false;
+  state.steward.confirmOpen = false;
+  state.steward.showSubForm = false;
+  state.steward.phase = "hidden";
   state.result = data;
   state.selectedPlanId = data.recommendedId || data.plans?.[0]?.id || "";
   state.recordedFor = "";
@@ -476,6 +510,7 @@ function renderResult(data) {
     els.stickyBar.classList.remove("hidden");
     els.stickyPrice.textContent = money(plan.price.finalCents);
   }
+  renderStewardStrip();
   setTimeout(() => {
     els.results.scrollIntoView({ behavior: "smooth", block: "start" });
   }, 80);
@@ -518,6 +553,16 @@ function selectPlan(planId, record = true) {
     const plan = findPlan(planId);
     recordPlan(plan);
     showToast(`已选「${plan.label}」${plan.price.savingsCents > 0 ? `，这单省 ${money(plan.price.savingsCents)}` : ""}`);
+  }
+  // 换了方案就必须换报价，否则确认卡会把上一套方案当作这一单。
+  if (state.quote && state.quote.planId !== planId) {
+    state.quote = null;
+    state.quoteTokens = null;
+    state.steward.confirmOpen = false;
+    if (autoOn("autoPrepare")) enterStewardFlow();
+    else setPhase("hidden");
+  } else if (state.steward.phase === "hidden") {
+    renderStewardStrip();
   }
 }
 
@@ -662,8 +707,7 @@ function modalByName(name) {
     detail: els.detailModal,
     store: els.storeModal,
     info: els.infoModal,
-    action: els.actionModal,
-    reminders: els.remindersModal,
+    steward: els.stewardModal,
   }[name];
 }
 
@@ -681,12 +725,10 @@ function closeModal(name) {
   const modal = modalByName(name);
   if (!modal) return;
   modal.classList.add("hidden");
-  if (name === "action") {
-    clearInterval(state.quoteTimer);
-    state.quoteTimer = null;
+  if (name === "steward") {
     stopOrderPolling();
   }
-  const anyOpen = [els.detailModal, els.storeModal, els.infoModal, els.actionModal, els.remindersModal]
+  const anyOpen = [els.detailModal, els.storeModal, els.infoModal, els.stewardModal]
     .some((item) => item && !item.classList.contains("hidden"));
   if (!anyOpen) document.body.classList.remove("modal-open");
   if (state.lastFocus && typeof state.lastFocus.focus === "function") {
@@ -695,7 +737,7 @@ function closeModal(name) {
 }
 
 function closeAllModals() {
-  ["detail", "store", "info", "action", "reminders"].forEach(closeModal);
+  ["detail", "store", "info", "steward"].forEach(closeModal);
 }
 
 function showHistory() {
@@ -773,6 +815,7 @@ async function optimizeNow() {
     renderResult(data);
     els.optimizeBtn.disabled = false;
     els.optimizeBtn.classList.remove("is-loading");
+    enterStewardFlow();
   } catch (error) {
     stopLoading();
     els.optimizeBtn.disabled = false;
@@ -825,6 +868,170 @@ function buildInput() {
   };
 }
 
+// ---------------- 麦当劳 MCP 接入 ----------------
+
+const LIVE_PILL_TEXT = {
+  demo: "演示数据",
+  live: "实时已连接",
+  checking: "校验中…",
+  error: "校验失败",
+  disabled: "接入已关闭",
+};
+
+const LIVE_ERROR_HINT = {
+  TOKEN_MISSING: "请先粘贴 MCP Token。",
+  TOKEN_TOO_SHORT: "Token 看起来不完整，确认整段复制后再试。",
+  TOKEN_TOO_LONG: "Token 超过 512 个字符，只粘贴 Token 本身。",
+  TOKEN_FORMAT: "Token 中间不能有空格、换行或多余字符。",
+  INVALID_TOKEN: "Token 校验未通过（401），可能已失效或复制不全，请重新生成。",
+  TIMEOUT: "连接 MCP 超时，检查服务端网络或稍后重试。",
+  NETWORK: "服务端访问不了 mcp.mcd.cn，检查网络、防火墙或代理。",
+  CONNECT_FAILED: "连接 MCP 失败，稍后重试；反复失败请查看服务端日志。",
+  SETUP_DISABLED: "当前部署关闭了页面接入，请改用环境变量 MCD_MCP_TOKEN。",
+  CROSS_ORIGIN: "请求来源不被接受，请从本站页面操作。",
+  RATE_LIMITED: "校验太频繁，等一分钟再试。",
+};
+
+function renderLiveFeedback(message, kind = "error") {
+  if (!els.liveFeedback) return;
+  els.liveFeedback.classList.remove("hidden", "is-ok", "is-error");
+  els.liveFeedback.classList.add(kind === "ok" ? "is-ok" : "is-error");
+  els.liveFeedback.textContent = message;
+}
+
+function clearLiveFeedback() {
+  if (!els.liveFeedback) return;
+  els.liveFeedback.classList.add("hidden");
+  els.liveFeedback.classList.remove("is-ok", "is-error");
+  els.liveFeedback.textContent = "";
+}
+
+function renderLiveStatus(status) {
+  if (!els.livePill || !status) return;
+  state.live.status = status;
+  const checking = state.live.busy;
+  let key = "demo";
+  if (!status.setupEnabled) key = "disabled";
+  else if (checking) key = "checking";
+  else if (status.connected) key = "live";
+  else if (status.lastError) key = "error";
+
+  els.livePill.dataset.state = key;
+  els.livePill.textContent = LIVE_PILL_TEXT[key];
+  const disabled = !status.setupEnabled || checking;
+  if (els.liveSave) {
+    els.liveSave.disabled = disabled;
+    els.liveSave.textContent = status.connected ? "更换 Token" : "保存并校验";
+  }
+  if (els.liveToken) els.liveToken.disabled = disabled;
+  if (els.liveDisconnect) els.liveDisconnect.classList.toggle("hidden", !status.connected);
+  if (els.liveSetup) els.liveSetup.classList.toggle("is-busy", checking);
+}
+
+async function loadLiveStatus() {
+  try {
+    const data = await api("api/live/status");
+    renderLiveStatus(data);
+    if (!data.setupEnabled) {
+      renderLiveFeedback(LIVE_ERROR_HINT.SETUP_DISABLED, "error");
+    } else if (data.connected) {
+      const from = data.envManaged ? "环境变量" : "页面保存的 Token";
+      renderLiveFeedback(`已连接实时数据（来源：${from}）${data.checkedAt ? ` · 校验于 ${formatDateTime(data.checkedAt)}` : ""}。`, "ok");
+    } else if (data.lastError) {
+      renderLiveFeedback(LIVE_ERROR_HINT[data.lastError.code] || data.lastError.message, "error");
+    }
+    return data;
+  } catch {
+    renderLiveStatus({ setupEnabled: true, connected: false, state: "disabled", lastError: null });
+    renderLiveFeedback("无法读取接入状态，刷新页面重试；算价与下单不受影响。", "error");
+    return null;
+  }
+}
+
+async function saveLiveToken(event) {
+  event?.preventDefault();
+  if (state.live.busy) return;
+  const token = els.liveToken?.value?.trim() || "";
+  if (!token) {
+    renderLiveFeedback(LIVE_ERROR_HINT.TOKEN_MISSING, "error");
+    els.liveToken?.focus();
+    return;
+  }
+  state.live.busy = true;
+  clearLiveFeedback();
+  renderLiveStatus(state.live.status || { setupEnabled: true, connected: false });
+  try {
+    const data = await api("api/live/token", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    state.live.busy = false;
+    if (els.liveToken) {
+      els.liveToken.value = "";
+      els.liveToken.type = "password";
+    }
+    if (els.liveReveal) els.liveReveal.textContent = "显示";
+    renderLiveStatus({ ...data, lastError: null });
+    renderLiveFeedback("校验通过，已切换为实时数据。重新点一次「一键算最省」，就能拿到真实门店与官方核价。", "ok");
+    showToast("已接入麦当劳 MCP");
+    await loadBootstrap();
+    resetAfterModeSwitch();
+  } catch (error) {
+    state.live.busy = false;
+    const hint = LIVE_ERROR_HINT[error.code] || error.message || "校验失败，请稍后重试";
+    renderLiveStatus({ setupEnabled: true, connected: false, state: "error", lastError: { code: error.code, message: hint } });
+    renderLiveFeedback(hint, "error");
+    els.liveToken?.focus();
+  }
+}
+
+async function disconnectLive() {
+  if (state.live.busy) return;
+  if (!window.confirm("断开后页面回到演示数据，确认断开？")) return;
+  state.live.busy = true;
+  renderLiveStatus(state.live.status || { setupEnabled: true, connected: true });
+  try {
+    const data = await api("api/live/disconnect", { method: "POST", body: "{}" });
+    state.live.busy = false;
+    renderLiveStatus({ ...data, connected: false, lastError: null });
+    renderLiveFeedback(`已断开，回到演示数据。${data.note || ""}`.trim(), "ok");
+    showToast("已断开实时数据");
+    await loadBootstrap();
+    resetAfterModeSwitch();
+  } catch (error) {
+    state.live.busy = false;
+    renderLiveStatus(state.live.status || { setupEnabled: true, connected: false });
+    renderLiveFeedback(error.message, "error");
+  }
+}
+
+function toggleLiveToken() {
+  if (!els.liveToken) return;
+  const revealed = els.liveToken.type === "text";
+  state.live.revealed = !revealed;
+  els.liveToken.type = revealed ? "password" : "text";
+  els.liveReveal.textContent = revealed ? "显示" : "隐藏";
+}
+
+// 切换数据模式后旧的方案/报价/订单都不再成立，直接清空主路径结果。
+function resetAfterModeSwitch() {
+  stopOrderPolling();
+  clearInterval(state.steward.tickTimer);
+  state.steward.tickTimer = null;
+  state.steward.phase = "hidden";
+  state.steward.confirmOpen = false;
+  state.steward.showSubForm = false;
+  state.quote = null;
+  state.quoteTokens = null;
+  state.order = null;
+  state.quoteExpired = false;
+  state.result = null;
+  if (els.results) els.results.classList.add("hidden");
+  if (els.warnings) els.warnings.classList.add("hidden");
+  if (els.stickyBar) els.stickyBar.classList.add("hidden");
+  renderStewardStrip();
+}
+
 function executionBadge() {
   const caps = state.capabilities || {};
   if (caps.mode === "demo" || caps.writeMode === "demo") {
@@ -868,228 +1075,788 @@ function modeText(mode) {
   return mode === "delivery" ? "麦乐送" : "到店自取";
 }
 
-function actionErrorHtml(message) {
+// ---------------- 省单管家 ----------------
+
+const STEWARD_KEY = "maimen-save-one-steward-v1";
+const RECONCILE_THROTTLE_MS = 30_000;
+
+const STEWARD_COPY = {
+  hidden: ["管家待命", "算一单，剩下的交给管家"],
+  preparing: ["管家正在备单…", "锁定门店、餐品、券和金额"],
+  ready: ["管家已接管 · 已自动备单", ""],
+  refreshing: ["管家正在续期报价…", "价格不变时不用重新确认"],
+  ordered: ["订单待支付 · 状态自动轮询中", ""],
+  expired: ["报价已过期", "让管家重新备单"],
+  error: ["备单失败，可手动重试", "不影响算价和手动下单"],
+};
+
+const STEWARD_ACTION = {
+  ready: { label: "确认下单", action: "confirm" },
+  ordered: { label: "去支付", action: "pay" },
+  expired: { label: "重新备单", action: "prepare" },
+  error: { label: "重试备单", action: "prepare" },
+  preparing: { label: "备单中…", action: "" },
+  refreshing: { label: "续期中…", action: "" },
+};
+
+const TODO_ACTION = {
+  payment_due: { label: "去支付", action: "todo-pay" },
+  quote_expiry: { label: "续报价", action: "todo-refresh" },
+  duplicate_orders: { label: "查看对账", action: "todo-reconcile" },
+  subscription_limit: { label: "管理套餐", action: "todo-subs" },
+  coupon_expiry: { label: "去下单", action: "todo-order" },
+};
+
+const PIPELINE_TAG = { done: "已完成", demo: "演示", pending: "等待", failed: "失败" };
+
+function loadStewardPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STEWARD_KEY) || "{}");
+    Object.assign(state.steward.auto, raw.auto || {});
+    state.steward.lastRunAt = raw.lastRunAt || {};
+  } catch {
+    // 本地偏好损坏时保持默认值
+  }
+}
+
+function saveStewardPrefs() {
+  try {
+    localStorage.setItem(
+      STEWARD_KEY,
+      JSON.stringify({ auto: state.steward.auto, lastRunAt: state.steward.lastRunAt }),
+    );
+  } catch {
+    // 隐私模式写入失败时忽略
+  }
+}
+
+function markAutomationRun(id) {
+  state.steward.lastRunAt[id] = new Date().toISOString();
+  saveStewardPrefs();
+}
+
+function autoOn(id) {
+  return state.steward.auto[id] !== false;
+}
+
+function stewardMetaLine(phase) {
+  const parts = [];
+  if (phase === "ready" || phase === "refreshing" || phase === "expired") {
+    const left = state.quote ? Date.parse(state.quote.expiresAt) - Date.now() : 0;
+    parts.push(left > 0 ? `报价 ${countdownText(left)}` : "报价已过期");
+    if (state.quote?.plan?.coupon) {
+      parts.push(state.quote.couponClaimed ? "券已领" : state.steward.gateNote.autoClaim || "券待领");
+    } else {
+      parts.push("无需领券");
+    }
+  }
+  if (phase === "ordered" && state.order) {
+    parts.push(money(state.order.amountCents));
+    parts.push(orderStatusLabel(state.order.status));
+  }
+  parts.push(state.dataMode === "live" ? "实时数据" : "演示数据");
+  return parts.join(" · ");
+}
+
+function setPhase(phase) {
+  state.steward.phase = phase;
+  renderStewardStrip();
+}
+
+function renderStewardStrip() {
+  if (!els.stewardStrip) return;
+  if (state.steward.failed && !state.quote && !state.order) {
+    els.stewardStrip.hidden = true;
+    return;
+  }
+  const phase = state.steward.phase;
+  els.stewardStrip.hidden = phase === "hidden";
+  els.stewardStrip.dataset.phase = phase;
+  const [title, fallbackMeta] = STEWARD_COPY[phase] || STEWARD_COPY.hidden;
+  els.stewardStripTitle.textContent = title;
+  els.stewardStripMeta.textContent = stewardMetaLine(phase) || fallbackMeta;
+  const action = STEWARD_ACTION[phase];
+  els.stewardPrimaryBtn.textContent = action ? action.label : "确认下单";
+  els.stewardPrimaryBtn.disabled = !action || !action.action || state.steward.busy;
+  els.stewardPrimaryBtn.dataset.stewardAction = action?.action || "";
+  els.stewardConfirm.classList.toggle("hidden", !state.steward.confirmOpen);
+  els.stewardConfirm.innerHTML = state.steward.confirmOpen ? stewardConfirmHtml() : "";
+}
+
+function stewardConfirmHtml() {
+  const quote = state.quote;
+  if (!quote) return "";
+  const plan = quote.plan;
+  const coupon = plan.coupon;
   return `
-    <div class="empty-state">
-      <p class="card-kicker">执行中心</p>
-      <h2 id="actionTitle">暂时无法生成报价</h2>
-      <p>${escapeHtml(message)}</p>
-      <div class="modal-actions">
-        <button type="button" class="select-button" data-action="retry-quote">重新生成报价</button>
+    <b>确认这一单</b>
+    <div class="steward-confirm-rows">
+      <div><span>方案</span><b>${escapeHtml(plan.label)}</b></div>
+      <div><span>门店</span><b>${escapeHtml(quote.store?.name || "")}</b></div>
+      <div><span>取餐</span><b>${modeText(plan.mode)}</b></div>
+      <div><span>优惠券</span><b>${coupon ? (quote.couponClaimed ? `已领 · ${escapeHtml(coupon.name)}` : `待领 · ${escapeHtml(coupon.name)}`) : "无"}</b></div>
+      <div><span>实付</span><b>${money(plan.price.finalCents)}</b></div>
+    </div>
+    <div class="steward-confirm-actions">
+      <button type="button" class="select-button" data-steward-action="confirm-create" ${state.steward.busy ? "disabled" : ""}>确认生成待支付订单</button>
+      <button type="button" class="text-button" data-steward-action="confirm-cancel">再想想</button>
+    </div>`;
+}
+
+async function fetchSteward() {
+  try {
+    const data = await api("api/steward");
+    state.steward.view = data;
+    state.steward.failed = false;
+    return data;
+  } catch {
+    state.steward.failed = true;
+    return null;
+  }
+}
+
+async function prepareQuote({ force = false } = {}) {
+  const plan = selectedPlan();
+  if (!plan || !state.result) throw new Error("先算一单再备单");
+  const samePlan = state.quote && state.quote.planId === plan.id;
+  const fresh = samePlan && Date.parse(state.quote.expiresAt) - Date.now() > 30_000;
+  if (!force && fresh) return state.quote;
+  const data = await api("api/quote", {
+    method: "POST",
+    body: JSON.stringify({ input: buildInput(), planId: plan.id }),
+  });
+  state.quote = data.quote;
+  state.quoteTokens = data.tokens;
+  state.capabilities = data.capabilities || state.capabilities;
+  state.quoteExpired = false;
+  renderStewardStrip();
+  return state.quote;
+}
+
+async function autoClaimCoupon() {
+  const quote = state.quote;
+  const caps = state.capabilities || {};
+  if (!quote?.plan?.coupon || quote.couponClaimed) return;
+  if (!caps.couponClaim) {
+    state.steward.gateNote.autoClaim = "待解锁";
+    return;
+  }
+  try {
+    const data = await api("api/coupons/claim", {
+      method: "POST",
+      body: JSON.stringify({ quoteId: quote.id, token: state.quoteTokens.claim }),
+    });
+    state.quote = data.quote;
+    state.capabilities = data.capabilities || state.capabilities;
+    markAutomationRun("autoClaim");
+  } catch {
+    // 领券失败保留手动入口，不阻塞下单
+  }
+}
+
+async function enterStewardFlow() {
+  if (!autoOn("autoPrepare")) {
+    setPhase("hidden");
+    return;
+  }
+  setPhase("preparing");
+  try {
+    await prepareQuote({ force: true });
+    markAutomationRun("autoPrepare");
+    setPhase("ready");
+    if (autoOn("autoClaim")) await autoClaimCoupon();
+    setPhase("ready");
+    startStewardTimer();
+    fetchSteward();
+  } catch {
+    setPhase("error");
+  }
+}
+
+function startStewardTimer() {
+  clearInterval(state.steward.tickTimer);
+  state.steward.tickTimer = setInterval(() => {
+    const phase = state.steward.phase;
+    if (phase !== "ready" && phase !== "refreshing" && phase !== "ordered") return;
+    if (phase === "ready") {
+      const left = state.quote ? Date.parse(state.quote.expiresAt) - Date.now() : 0;
+      els.stewardStripMeta.textContent = stewardMetaLine("ready");
+      if (left <= 0) {
+        setPhase("expired");
+        if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+      } else if (left < 30_000 && autoOn("autoRefresh")) refreshQuote();
+    }
+    const modalCountdown = $("#quoteCountdown");
+    if (modalCountdown && state.quote) {
+      modalCountdown.textContent = countdownText(Date.parse(state.quote.expiresAt) - Date.now());
+    }
+  }, 1000);
+}
+
+async function refreshQuote() {
+  if (state.steward.refreshLock) return;
+  if (!state.result) {
+    // 刷新过页面后本地没有方案，重新算一单即会自动走完整管家流程。
+    await optimizeNow();
+    return;
+  }
+  state.steward.refreshLock = true;
+  setPhase("refreshing");
+  try {
+    await prepareQuote({ force: true });
+    markAutomationRun("autoRefresh");
+    if (autoOn("autoClaim")) await autoClaimCoupon();
+    setPhase(state.order ? "ordered" : "ready");
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+  } catch {
+    setPhase("expired");
+  } finally {
+    state.steward.refreshLock = false;
+    renderStewardStrip();
+  }
+}
+
+async function requestOrder() {
+  if (state.steward.phase === "ordered") {
+    openSteward();
+    return;
+  }
+  if (!state.result) {
+    showToast("先算一单，再确认下单", true);
+    return;
+  }
+  if (!state.quote) {
+    setPhase("preparing");
+    try {
+      await prepareQuote({ force: true });
+      setPhase("ready");
+    } catch {
+      setPhase("error");
+      return;
+    }
+  }
+  state.steward.confirmOpen = true;
+  renderStewardStrip();
+  els.stewardConfirm.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function confirmOrderAction() {
+  if (state.steward.busy) return;
+  state.steward.busy = true;
+  renderStewardStrip();
+  try {
+    if (!state.quote || !state.quoteTokens) {
+      await prepareQuote({ force: true });
+      if (!state.quote || !state.quoteTokens) throw new Error("报价尚未就绪，请重试");
+    }
+    const data = await api("api/orders", {
+      method: "POST",
+      body: JSON.stringify({ quoteId: state.quote.id, token: state.quoteTokens.order }),
+    });
+    state.order = data.order;
+    state.steward.confirmOpen = false;
+    setPhase("ordered");
+    startOrderPolling();
+    if (autoOn("autoReconcile")) reconcileSilently();
+    fetchSteward();
+    loadReminders(true);
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+    showToast("订单已创建，请核对支付页");
+  } catch (error) {
+    if (error.code === "PRICE_CHANGED" || error.code === "QUOTE_EXPIRED" || error.code === "QUOTE_NOT_FOUND") {
+      state.quote = null;
+      state.quoteTokens = null;
+      try {
+        await prepareQuote({ force: true });
+        state.steward.confirmOpen = true;
+        setPhase("ready");
+      } catch {
+        setPhase("error");
+      }
+      showToast(error.code === "PRICE_CHANGED" ? "价格已变化，请重新确认" : "报价已更新，请重新确认", true);
+      return;
+    }
+    showToast(error.message, true);
+  } finally {
+    state.steward.busy = false;
+    renderStewardStrip();
+  }
+}
+
+async function reconcileSilently() {
+  if (Date.now() - state.steward.lastReconcileAt < RECONCILE_THROTTLE_MS) return;
+  state.steward.lastReconcileAt = Date.now();
+  try {
+    const data = await api("api/orders/reconcile", { method: "POST", body: "{}" });
+    if (data.cancelled > 0) {
+      markAutomationRun("autoReconcile");
+      showToast(`已自动取消 ${data.cancelled} 个重复未支付订单`);
+      if (state.order && state.order.status === "pending_payment") {
+        try {
+          const fresh = await api(`api/orders/${encodeURIComponent(state.order.id)}`);
+          state.order = fresh.order;
+        } catch {
+          // 订单已不在时保持原状态，管家中心可手动刷新
+        }
+      }
+      loadReminders(true);
+      renderStewardStrip();
+      if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+    }
+  } catch {
+    // 对账失败静默，管家中心仍可手动触发
+  }
+}
+
+function openOrderPay() {
+  const payUrl = safeExternalUrl(state.order?.payUrl);
+  if (!payUrl) {
+    if (!els.stewardModal.classList.contains("hidden")) {
+      showToast("这笔订单没有官方支付链接，请在麦当劳官方渠道核对", true);
+    } else {
+      openSteward();
+      showToast("这笔订单没有官方支付链接，请在订单卡里核对", true);
+    }
+    return;
+  }
+  window.open(payUrl, "_blank", "noopener,noreferrer");
+}
+
+function stewardUnlockHtml() {
+  const caps = state.capabilities || {};
+  if (!(caps.writeMode === "private" && !caps.unlocked && caps.writePasscodeRequired)) return "";
+  return `
+    <div class="unlock-box">
+      <div>
+        <b>实时写操作已锁定</b>
+        <p>输入私有模式口令后，领券和下单仍受金额、频次和 kill switch 限制。</p>
+      </div>
+      <div class="inline-row">
+        <input id="privatePasscode" type="password" autocomplete="off" placeholder="私有模式口令">
+        <button type="button" class="mini-button mini-button-red" data-steward-action="unlock">解锁</button>
       </div>
     </div>`;
 }
 
-async function openActionCenter() {
-  const plan = selectedPlan();
-  if (!plan || !state.result) {
-    showToast("先算一单，再进入执行中心");
-    return;
-  }
-  state.quote = null;
-  state.quoteTokens = null;
-  state.order = null;
-  state.quoteExpired = false;
-  state.showOrderConfirm = false;
-  state.showSubForm = false;
-  els.actionContent.innerHTML = `
-    <div class="empty-state">
-      <p class="card-kicker">执行中心</p>
-      <h2 id="actionTitle">正在生成报价快照</h2>
-      <p>锁定门店、餐品、券和金额，随后可以选择领券或生成待支付订单。</p>
-      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
-    </div>`;
-  openModal("action");
-  try {
-    const data = await api("api/quote", {
-      method: "POST",
-      body: JSON.stringify({ input: buildInput(), planId: plan.id }),
-    });
-    state.quote = data.quote;
-    state.quoteTokens = data.tokens;
-    state.capabilities = data.capabilities || state.capabilities;
-    renderActionCenter();
-    startQuoteTimer();
-    loadSubscriptions();
-    loadReminders(true);
-  } catch (error) {
-    els.actionContent.innerHTML = actionErrorHtml(error.message);
-  }
-}
-
-function startQuoteTimer() {
-  clearInterval(state.quoteTimer);
-  if (!state.quote) return;
-  const tick = () => {
-    const element = $("#quoteCountdown");
-    if (!element) return;
-    const left = Date.parse(state.quote.expiresAt) - Date.now();
-    element.textContent = countdownText(left);
-    if (left <= 0 && !state.quoteExpired) {
-      state.quoteExpired = true;
-      renderActionCenter();
-    }
-  };
-  tick();
-  state.quoteTimer = setInterval(tick, 1000);
-}
-
-function renderActionCenter() {
-  const quote = state.quote;
-  if (!quote) return;
-  const caps = state.capabilities || {};
+function quoteStepsHtml(quote) {
   const plan = quote.plan;
   const coupon = plan.coupon;
-  const expired = state.quoteExpired || Date.parse(quote.expiresAt) <= Date.now();
   const claimed = Boolean(quote.couponClaimed);
-  const order = state.order;
-  const payUrl = order ? safeExternalUrl(order.payUrl) : "";
-  const orderKicker =
-    order?.status === "paid"
+  const caps = state.capabilities || {};
+  const expired = Date.parse(quote.expiresAt) <= Date.now() || state.steward.phase === "expired";
+  const canClaim = Boolean(coupon) && !claimed && !expired && caps.couponClaim;
+  return `
+    <div class="execution-steps">
+      <div class="execution-step is-done">
+        <span class="step-index">1</span>
+        <div class="step-main"><b>报价快照已生成</b><small>管家自动完成 · 锁定门店、餐品、券和金额</small></div>
+        <span class="step-state">已锁定</span>
+      </div>
+      <div class="execution-step ${claimed || !coupon ? "is-done" : ""}">
+        <span class="step-index">2</span>
+        <div class="step-main"><b>领取最优券</b><small>${coupon ? (claimed ? "已领取，可在本单使用" : `当前最优券：${escapeHtml(coupon.name)}`) : "当前方案无需领券"}</small></div>
+        ${coupon && !claimed && !expired
+          ? `<button type="button" class="mini-button" data-steward-action="claim-coupon" ${canClaim ? "" : "disabled"}>${caps.couponClaim ? "领取" : "未开启"}</button>`
+          : `<span class="step-state">${coupon ? "已完成" : "无需操作"}</span>`}
+      </div>
+      <div class="execution-step">
+        <span class="step-index">3</span>
+        <div class="step-main"><b>创建待支付订单</b><small>${expired ? "报价已过期，先重新备单" : "确认卡核对金额与门店后生成"}</small></div>
+        ${expired
+          ? '<span class="step-state">待备单</span>'
+          : `<button type="button" class="mini-button" data-steward-action="confirm">确认下单</button>`}
+      </div>
+      <div class="execution-step">
+        <span class="step-index">4</span>
+        <div class="step-main"><b>完成支付</b><small>支付在麦当劳官方渠道完成，本页只做状态轮询</small></div>
+        <span class="step-state">待订单</span>
+      </div>
+    </div>`;
+}
+
+function orderCardHtml(order) {
+  const payUrl = safeExternalUrl(order.payUrl);
+  const kicker =
+    order.status === "paid"
       ? "已完成订单"
-      : order?.status === "cancelled"
+      : order.status === "cancelled"
         ? "已取消订单"
         : "待支付订单";
-  const orderHelp =
-    order?.status === "paid"
+  const help =
+    order.status === "paid"
       ? "演示支付已完成；实时模式以麦当劳官方支付状态为准。"
-      : order?.status === "cancelled"
+      : order.status === "cancelled"
         ? "订单已取消，不会继续扣款。"
         : payUrl
           ? "支付链接由麦当劳官方返回；请核对金额后再支付。"
           : "演示订单不会产生真实扣款；可点击模拟支付验证状态轮询。";
-  const canClaim = Boolean(coupon) && !claimed && !expired && caps.couponClaim;
-  const canOrder = !expired && !order && caps.orderCreate;
-  const locked = caps.writeMode === "private" && !caps.unlocked;
-  const couponStarted = coupon && !claimed && !expired;
-  const steps = [];
-  steps.push(`
-    <div class="execution-step is-done">
-      <span class="step-index">1</span>
-      <div class="step-main"><b>报价快照已生成</b><small>已锁定门店、餐品、券和金额</small></div>
-      <span class="step-state">已锁定</span>
-    </div>`);
-  steps.push(`
-    <div class="execution-step ${claimed ? "is-done" : ""}">
-      <span class="step-index">2</span>
-      <div class="step-main"><b>领取最优券</b><small>${coupon ? (claimed ? "已领取，可在本单使用" : `当前最优券：${escapeHtml(coupon.name)}`) : "当前方案无需领券"}</small></div>
-      ${couponStarted ? `<button type="button" class="mini-button" data-action="claim-coupon" ${canClaim ? "" : "disabled"}>${caps.couponClaim ? "领取" : "未开启"}</button>` : `<span class="step-state">${coupon ? "已完成" : "无需操作"}</span>`}
-    </div>`);
-  steps.push(`
-    <div class="execution-step ${order ? "is-done" : ""}">
-      <span class="step-index">3</span>
-      <div class="step-main"><b>创建待支付订单</b><small>${order ? `订单 ${escapeHtml(order.id)}` : "生成订单后，支付仍在麦当劳官方页面完成"}</small></div>
-      ${!order && !expired ? `<button type="button" class="mini-button" data-action="show-order-confirm" ${canOrder ? "" : "disabled"}>${caps.orderCreate ? "生成订单" : "未开启"}</button>` : `<span class="step-state">${order ? "已创建" : "已过期"}</span>`}
-    </div>`);
-  steps.push(`
-    <div class="execution-step ${order?.status === "paid" ? "is-done" : ""}">
-      <span class="step-index">4</span>
-      <div class="step-main"><b>完成支付</b><small>支付在麦当劳官方渠道完成，本页只做状态提醒</small></div>
-      <span class="step-state">${order ? orderStatusLabel(order.status) : "待订单"}</span>
-    </div>`);
-
-  const orderHtml = order
-    ? `
-      <div class="order-card">
-        <div class="order-head">
-          <div>
-            <p class="card-kicker">${orderKicker}</p>
-            <h3>${escapeHtml(order.id)}</h3>
-          </div>
-          <span class="order-status status-${escapeAttr(order.status)}">${orderStatusLabel(order.status)}</span>
-        </div>
-        <div class="order-meta">
-          <span>${money(order.amountCents)}</span>
-          <span>${escapeHtml(order.store?.name || "")}</span>
-          <span>${modeText(order.plan?.mode)}</span>
-        </div>
-        <div class="order-actions">
-          ${payUrl ? `<a class="mini-button mini-button-red" href="${escapeAttr(payUrl)}" target="_blank" rel="noreferrer">打开官方支付</a>` : ""}
-          ${order.demo && order.status === "pending_payment" ? '<button type="button" class="mini-button" data-action="mock-pay">模拟支付成功</button>' : ""}
-          ${order.status === "pending_payment" ? '<button type="button" class="ghost-button" data-action="cancel-order">取消未支付订单</button>' : ""}
-          <button type="button" class="ghost-button" data-action="refresh-order">刷新状态</button>
-        </div>
-        <p class="order-help">${orderHelp}</p>
-      </div>`
-    : "";
-
-  const confirmHtml = state.showOrderConfirm && !order
-    ? `
-      <div class="confirm-box">
-        <label class="check-row">
-          <input id="orderConfirmCheck" type="checkbox">
-          <span>我已确认门店、餐品、金额和取餐方式</span>
-        </label>
-        <button type="button" class="select-button" data-action="create-order" ${caps.orderCreate ? "" : "disabled"}>确认生成待支付订单</button>
-      </div>`
-    : "";
-
-  const unlockHtml = locked && caps.writePasscodeRequired
-    ? `
-      <div class="unlock-box">
+  return `
+    <div class="order-card">
+      <div class="order-head">
         <div>
-          <b>实时写操作已锁定</b>
-          <p>输入私有模式口令后，领券和下单仍受金额、频次和 kill switch 限制。</p>
+          <p class="card-kicker">${kicker}</p>
+          <h3>${escapeHtml(order.id)}</h3>
         </div>
-        <div class="inline-row">
-          <input id="privatePasscode" type="password" autocomplete="off" placeholder="私有模式口令">
-          <button type="button" class="mini-button mini-button-red" data-action="unlock">解锁</button>
-        </div>
-      </div>`
-    : "";
+        <span class="order-status status-${escapeAttr(order.status)}">${orderStatusLabel(order.status)}</span>
+      </div>
+      <div class="order-meta">
+        <span>${money(order.amountCents)}</span>
+        <span>${escapeHtml(order.store?.name || "")}</span>
+        <span>${modeText(order.plan?.mode)}</span>
+      </div>
+      <div class="order-actions">
+        ${payUrl ? `<button type="button" class="mini-button mini-button-red" data-steward-action="pay-link">打开官方支付</button>` : ""}
+        ${order.demo && order.status === "pending_payment" ? '<button type="button" class="mini-button" data-steward-action="mock-pay">模拟支付成功</button>' : ""}
+        ${order.status === "pending_payment" ? '<button type="button" class="ghost-button" data-steward-action="cancel-order">取消未支付订单</button>' : ""}
+        <button type="button" class="ghost-button" data-steward-action="refresh-order">刷新状态</button>
+      </div>
+      <p class="order-help">${help}</p>
+    </div>`;
+}
 
-  const subForm = state.showSubForm
-    ? `
-      <div class="inline-form">
-        <div class="inline-form-head">
-          <b>存为固定套餐</b>
-          <button type="button" class="text-button" data-action="hide-sub-form">收起</button>
+function quoteCardHtml(quote) {
+  const plan = quote.plan;
+  const left = Date.parse(quote.expiresAt) - Date.now();
+  const badge = left > 0
+    ? `剩 <span id="quoteCountdown">${countdownText(left)}</span>`
+    : "已过期";
+  return `
+    <div class="steward-quote-card">
+      <div class="steward-quote-head">
+        <div>
+          <b>${money(plan.price.finalCents)}</b>
+          <div class="steward-quote-meta">
+            <span>${escapeHtml(plan.label)}</span>
+            <span>${escapeHtml(quote.store?.name || "")}</span>
+            <span>${modeText(plan.mode)}</span>
+          </div>
         </div>
-        <div class="form-grid">
-          <label>单次金额上限（元）<input id="subMaxAmount" type="number" min="1" max="200" step="1" value="${(plan.price.finalCents / 100).toFixed(0)}"></label>
-          <label>每日最多复购次数<input id="subRuns" type="number" min="1" max="10" step="1" value="1"></label>
-          <label>复购间隔（分钟）<input id="subInterval" type="number" min="1" max="10080" step="1" value="1440"></label>
-        </div>
-        <label class="check-row">
-          <input id="subAutoOrder" type="checkbox">
-          <span>允许自动复购（仅单用户私有模式生效，演示模式只模拟）</span>
-        </label>
-        <p class="form-help">自动复购会在达到每日次数上限后自动关闭，随时可在提醒中心关闭。</p>
-        <button type="button" class="select-button" data-action="save-sub">保存固定套餐</button>
-      </div>`
-    : "";
+        <span class="order-status ${left > 0 ? "status-pending_payment" : "status-cancelled"}">${badge}</span>
+      </div>
+    </div>`;
+}
 
-  els.actionContent.innerHTML = `
+function lastQuoteHtml(lastQuote) {
+  const expired = lastQuote.status !== "quoted";
+  return `
+    <div class="steward-quote-card">
+      <div class="steward-quote-head">
+        <div>
+          <b>${money(lastQuote.finalCents)}</b>
+          <div class="steward-quote-meta">
+            <span>${escapeHtml(lastQuote.planLabel || "上次报价")}</span>
+            <span>创建于 ${formatDateTime(lastQuote.createdAt)}</span>
+          </div>
+        </div>
+        <span class="order-status status-cancelled">${expired ? "已失效" : "上次报价"}</span>
+      </div>
+      <p class="form-help">页面刷新后本地确认令牌会失效，下单前需要重新备单；管家会自动核价，价格变化会让你重新确认。</p>
+      <div class="modal-actions">
+        <button type="button" class="select-button" data-steward-action="prepare">重新备单</button>
+      </div>
+    </div>`;
+}
+
+function lastOrderHtml(lastOrder) {
+  return `
+    <div class="steward-quote-card">
+      <div class="steward-quote-head">
+        <div>
+          <b>${money(lastOrder.amountCents)}</b>
+          <div class="steward-quote-meta">
+            <span>订单 ${escapeHtml(lastOrder.id.slice(0, 12))}</span>
+            <span>创建于 ${formatDateTime(lastOrder.createdAt)}</span>
+          </div>
+        </div>
+        <span class="order-status status-${escapeAttr(lastOrder.status)}">${orderStatusLabel(lastOrder.status)}</span>
+      </div>
+      <p class="form-help">刷新页面后本地订单上下文会丢失；这里读的是服务端记录，可以重新接管继续轮询。</p>
+      <div class="modal-actions">
+        <button type="button" class="select-button" data-steward-action="restore-order">重新接管这笔订单</button>
+      </div>
+    </div>`;
+}
+
+async function restoreLastOrder() {
+  const id = state.steward.view?.lastOrder?.id;
+  if (!id) return;
+  try {
+    const data = await api(`api/orders/${encodeURIComponent(id)}`);
+    state.order = data.order;
+    setPhase("ordered");
+    if (state.order.status === "pending_payment") startOrderPolling();
+    renderSteward();
+    showToast(`订单状态：${orderStatusLabel(state.order.status)}`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function subscriptionFormHtml() {
+  const quote = state.quote;
+  if (!state.steward.showSubForm || !quote) return "";
+  return `
+    <div class="inline-form">
+      <div class="inline-form-head">
+        <b>存为固定套餐</b>
+        <button type="button" class="text-button" data-steward-action="hide-sub-form">收起</button>
+      </div>
+      <div class="form-grid">
+        <label>单次金额上限（元）<input id="subMaxAmount" type="number" min="1" max="200" step="1" value="${(quote.plan.price.finalCents / 100).toFixed(0)}"></label>
+        <label>每日最多复购次数<input id="subRuns" type="number" min="1" max="10" step="1" value="1"></label>
+        <label>复购间隔（分钟）<input id="subInterval" type="number" min="1" max="10080" step="1" value="1440"></label>
+      </div>
+      <label class="check-row">
+        <input id="subAutoOrder" type="checkbox">
+        <span>允许自动复购（仅单用户私有模式生效，演示模式只模拟）</span>
+      </label>
+      <p class="form-help">自动复购会在达到每日次数上限后自动关闭，随时可在管家中心关闭。</p>
+      <button type="button" class="select-button" data-steward-action="save-sub">保存固定套餐</button>
+    </div>`;
+}
+
+function stewardOrderSection() {
+  const order = state.order;
+  const quote = state.quote;
+  if (order) {
+    return `
+      ${orderCardHtml(order)}
+      ${stewardUnlockHtml()}
+      <div class="modal-actions">
+        <button type="button" class="ghost-button" data-steward-action="refresh-order">刷新状态</button>
+        <button type="button" class="ghost-button" data-steward-action="reconcile">一键对账</button>
+      </div>`;
+  }
+  if (quote) {
+    return `
+      ${quoteCardHtml(quote)}
+      ${quoteStepsHtml(quote)}
+      ${state.steward.confirmOpen ? `<div class="steward-confirm">${stewardConfirmHtml()}</div>` : ""}
+      ${stewardUnlockHtml()}
+      <div class="modal-actions">
+        <button type="button" class="ghost-button" data-steward-action="copy-quote">复制清单</button>
+        <button type="button" class="ghost-button" data-steward-action="show-sub-form">存为固定套餐</button>
+        <button type="button" class="ghost-button" data-steward-action="prepare">重新备单</button>
+      </div>
+      ${subscriptionFormHtml()}`;
+  }
+  const view = state.steward.view;
+  const lastOrder = view?.lastOrder;
+  const lastQuote = view?.lastQuote;
+  if (lastOrder && (!lastQuote || Date.parse(lastOrder.createdAt || 0) >= Date.parse(lastQuote.createdAt || 0))) {
+    return lastOrderHtml(lastOrder);
+  }
+  if (lastQuote) return lastQuoteHtml(lastQuote);
+  return `
+    <div class="empty-state">
+      <p class="card-kicker">这一单</p>
+      <h3>还没有在管的单</h3>
+      <p>先在上面点一次「一键算最省」，管家会自动备单、领券并盯住报价有效期。</p>
+    </div>`;
+}
+
+function todoListHtml() {
+  const unread = state.reminders.filter((reminder) => !reminder.read).slice(0, 12);
+  if (!unread.length) {
+    return '<p class="empty-copy">暂无待办。报价、支付和券到期时会在这里出现。</p>';
+  }
+  return `<div class="reminder-list">${unread
+    .map((reminder) => {
+      const action = TODO_ACTION[reminder.type];
+      return `
+        <div class="reminder-item ${reminder.due ? "is-due" : ""}">
+          <span class="reminder-type">${reminderTypeLabel(reminder.type)}</span>
+          <div class="reminder-main">
+            <b>${escapeHtml(reminder.title)}</b>
+            <p>${escapeHtml(reminder.body)}</p>
+            <small>${formatDateTime(reminder.dueAt)}${reminder.due ? " · 已到提醒时间" : ""}</small>
+          </div>
+          <div class="reminder-actions">
+            ${action ? `<button type="button" class="mini-button mini-button-red" data-steward-action="${action.action}">${action.label}</button>` : ""}
+            <button type="button" class="ghost-button" data-steward-action="mark-reminder" data-reminder-id="${escapeAttr(reminder.id)}">知道了</button>
+          </div>
+        </div>`;
+    })
+    .join("")}</div>`;
+}
+
+function automationCardHtml(item) {
+  const on = state.steward.auto[item.id] !== undefined ? state.steward.auto[item.id] : item.defaultOn;
+  const lastRun = state.steward.lastRunAt[item.id] || item.lastRunAt;
+  const scopeTag = item.scope === "client" ? "端上" : "服务端";
+  let control;
+  if (item.scope !== "client") {
+    control = '<span class="automation-scope">服务端常开</span>';
+  } else if (item.gated) {
+    control = `<span class="automation-gate">${escapeHtml(item.gateReason)}</span>`;
+  } else {
+    control = `<label class="switch-row switch-row-compact">
+        <input type="checkbox" data-steward-action="toggle-auto" data-auto-id="${escapeAttr(item.id)}" ${on ? "checked" : ""} aria-label="${escapeAttr(item.label)}开关">
+        <span class="switch" aria-hidden="true"></span>
+      </label>`;
+  }
+  return `
+    <div class="automation-card" data-gated="${item.gated}">
+      <div class="automation-head"><b>${escapeHtml(item.label)}</b><span class="automation-scope">${scopeTag}</span></div>
+      <p class="automation-trigger">${escapeHtml(item.trigger)}</p>
+      <div class="automation-foot">
+        <small>${lastRun ? `最近运行 ${formatDateTime(lastRun)}` : "尚未运行"}</small>
+        ${control}
+      </div>
+    </div>`;
+}
+
+function pipelineHtml() {
+  const view = state.steward.view;
+  const pipeline = view?.pipeline || [];
+  if (!pipeline.length) {
+    return '<p class="empty-copy">管道状态暂不可用；算价与下单不受影响。</p>';
+  }
+  const rows = pipeline
+    .map((step) => {
+      const meta = step.lastAt
+        ? `${step.tool} · ${step.lastMs}ms · ${formatDateTime(step.lastAt)}`
+        : step.tool;
+      return `
+        <li class="pipeline-step" data-state="${escapeAttr(step.state)}">
+          <span class="pipeline-dot" aria-hidden="true"></span>
+          <div class="pipeline-main"><b>${escapeHtml(step.label)}</b><small>${escapeHtml(meta)}</small></div>
+          <span class="pipeline-tag">${PIPELINE_TAG[step.state] || step.state}</span>
+        </li>`;
+    })
+    .join("");
+  const note = view?.mode === "demo"
+    ? '<div class="action-note">演示模式没有真实 MCP 轨迹，管道按「演示」展示；接入 Token 后这里显示真实调用耗时。</div>'
+    : "";
+  return `${note}<ol class="pipeline">${rows}</ol>`;
+}
+
+function renderSteward() {
+  if (!els.stewardContent) return;
+  const view = state.steward.view;
+  const unread = state.reminders.filter((reminder) => !reminder.read).length;
+  const automations = view?.automations || [];
+  const liveState = view?.liveState || "";
+  els.stewardContent.innerHTML = `
     <div class="detail-hero">
       <div>
-        <p class="card-kicker">执行中心 · ${escapeHtml(quote.id.slice(0, 12))}</p>
-        <h2 id="actionTitle">${escapeHtml(plan.label)} · ${money(plan.price.finalCents)}</h2>
-        <p class="detail-sub">${escapeHtml(quote.store?.name || "")} · ${modeText(plan.mode)} · 报价有效期 <span id="quoteCountdown">${countdownText(Date.parse(quote.expiresAt) - Date.now())}</span></p>
+        <p class="card-kicker">省单管家 · ${unread} 条待办</p>
+        <h2 id="stewardTitle">这一单，管家盯着</h2>
+        <p class="detail-sub">${state.dataMode === "live" ? `实时模式（${escapeHtml(liveState || "connected")}）` : "演示模式"} · 备单、领券、续报价、轮询与对账自动衔接</p>
       </div>
       ${executionBadge()}
     </div>
-    <div class="action-note ${expired ? "is-expired" : ""}">
-      ${expired ? "报价已过期，请重新生成报价后再执行。" : "报价已锁定当前门店、餐品、券和金额；如官方价格变化，服务端会中止并在重新确认后继续。"}
+    <div class="steward-nav" role="tablist" aria-label="管家分区">
+      <button type="button" data-steward-action="scroll" data-target="steward-sec-order" class="is-active">这一单</button>
+      <button type="button" data-steward-action="scroll" data-target="steward-sec-todo">待办</button>
+      <button type="button" data-steward-action="scroll" data-target="steward-sec-auto">自动化</button>
+      <button type="button" data-steward-action="scroll" data-target="steward-sec-pipe">MCP 管道</button>
+      <button type="button" data-steward-action="scroll" data-target="steward-sec-benefit">权益</button>
     </div>
-    <div class="detail-section">
-      <h3>执行步骤</h3>
-      <div class="execution-steps">${steps.join("")}</div>
-      ${unlockHtml}
-      ${confirmHtml}
-      ${orderHtml}
+    <div class="detail-section" id="steward-sec-order">
+      <div class="steward-section-head"><h3>这一单</h3><small>${STEWARD_COPY[state.steward.phase]?.[0] || ""}</small></div>
+      ${stewardOrderSection()}
     </div>
-    <div class="detail-section">
-      <h3>动作</h3>
-      <div class="modal-actions">
-        <button type="button" class="ghost-button" data-action="copy-quote">复制清单</button>
-        <button type="button" class="ghost-button" data-action="show-sub-form">存为固定套餐</button>
-        <button type="button" class="ghost-button" data-action="reconcile">一键对账</button>
-        ${expired ? '<button type="button" class="select-button" data-action="retry-quote">重新生成报价</button>' : ""}
+    <div class="detail-section" id="steward-sec-todo">
+      <div class="steward-section-head"><h3>待办</h3><small>${unread} 条未读</small></div>
+      ${todoListHtml()}
+      ${unread ? '<div class="modal-actions"><button type="button" class="ghost-button" data-steward-action="mark-all-read">全部标记已读</button></div>' : ""}
+    </div>
+    <div class="detail-section" id="steward-sec-auto">
+      <div class="steward-section-head"><h3>自动化</h3><small>端上 5 项可关，服务端 3 项常开</small></div>
+      <div class="automation-grid">${automations.map(automationCardHtml).join("") || '<p class="empty-copy">自动化目录暂不可用。</p>'}</div>
+    </div>
+    <div class="detail-section" id="steward-sec-pipe">
+      <div class="steward-section-head"><h3>MCP 管道</h3><small>${view?.mode === "live" ? "实时调用轨迹" : "演示数据"}</small></div>
+      ${pipelineHtml()}
+    </div>
+    <div class="detail-section" id="steward-sec-benefit">
+      <div class="steward-section-head"><h3>权益与固定套餐</h3><small>${state.accountSource === "live" ? "实时账户" : "演示账户"}</small></div>
+      ${renderAccountSection()}
+      <div class="account-section">
+        <div class="account-section-head"><h4>固定套餐复购</h4><span>${state.subscriptions.length} 个</span></div>
+        <div class="subscription-list">${renderSubscriptionCards()}</div>
       </div>
-      <p class="micro-trust">${state.subscriptions.length ? `已保存 ${state.subscriptions.length} 个固定套餐，可在提醒中心管理。` : "固定套餐支持金额上限、每日次数限制和随时关闭。"}</p>
+      <p class="form-help">自动复购默认关闭；开启后受单次金额、每日次数和间隔限制，达到上限会自动暂停。实时自动复购只在单用户私有模式生效。</p>
     </div>
-    ${subForm}
   `;
+}
+
+function stewardScrollTo(targetId) {
+  const target = targetId ? document.getElementById(targetId) : null;
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function handleStewardAction(name, data = {}) {
+  if (name === "confirm") return requestOrder();
+  if (name === "confirm-create") return confirmOrderAction();
+  if (name === "confirm-cancel") {
+    state.steward.confirmOpen = false;
+    renderStewardStrip();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+    return undefined;
+  }
+  if (name === "prepare") return refreshQuote();
+  if (name === "restore-order") return restoreLastOrder();
+  if (name === "claim-coupon") return claimCouponAction();
+  if (name === "unlock") return unlockPrivateAction();
+  if (name === "pay" || name === "pay-link") {
+    if (state.order) return openOrderPay();
+    return openSteward();
+  }
+  if (name === "refresh-order") return refreshOrderAction();
+  if (name === "cancel-order") return cancelOrderAction();
+  if (name === "mock-pay") return mockPayAction();
+  if (name === "copy-quote") return copyQuoteAction();
+  if (name === "show-sub-form") return showSubscriptionForm();
+  if (name === "hide-sub-form") {
+    state.steward.showSubForm = false;
+    renderSteward();
+    return undefined;
+  }
+  if (name === "save-sub") return saveSubscriptionAction();
+  if (name === "reconcile") return reconcileAction();
+  if (name === "toggle-sub") {
+    const enabled = data.enabled === "true";
+    return toggleSubscriptionAction(data.subId, enabled);
+  }
+  if (name === "run-sub") return runSubscriptionAction(data.subId);
+  if (name === "delete-sub") return deleteSubscriptionAction(data.subId);
+  if (name === "mark-reminder") return markReminderAction(data.reminderId);
+  if (name === "mark-all-read") return markAllRemindersRead();
+  if (name === "todo-pay") {
+    if (state.order) return openOrderPay();
+    return openSteward();
+  }
+  if (name === "todo-refresh") return refreshQuote();
+  if (name === "todo-order") return requestOrder();
+  if (name === "todo-reconcile") {
+    reconcileAction();
+    return stewardScrollTo("steward-sec-todo");
+  }
+  if (name === "todo-subs") return stewardScrollTo("steward-sec-benefit");
+  if (name === "scroll") return stewardScrollTo(data.target);
+  return undefined;
+}
+
+async function openSteward() {
+  openModal("steward");
+  els.stewardContent.innerHTML = `
+    <div class="empty-state">
+      <p class="card-kicker">省单管家</p>
+      <h2 id="stewardTitle">正在汇总这一单</h2>
+      <p>报价、待办、自动化与 MCP 管道会在这里汇总。</p>
+      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>`;
+  await Promise.allSettled([
+    fetchSteward(),
+    loadReminders(false),
+    loadAccount(),
+    loadSubscriptions(),
+    loadCapabilities(),
+  ]);
+  renderSteward();
+  if (autoOn("autoReconcile")) reconcileSilently();
 }
 
 async function claimCouponAction() {
@@ -1102,53 +1869,14 @@ async function claimCouponAction() {
   try {
     const data = await api("api/coupons/claim", {
       method: "POST",
-      body: JSON.stringify({
-        quoteId: state.quote.id,
-        token: state.quoteTokens.claim,
-      }),
+      body: JSON.stringify({ quoteId: state.quote.id, token: state.quoteTokens.claim }),
     });
     state.quote = data.quote;
     state.capabilities = data.capabilities || state.capabilities;
-    renderActionCenter();
-    loadReminders(true);
+    renderSteward();
+    renderStewardStrip();
     showToast(data.idempotent ? "这张券已经领取过了" : "最优券已领取");
   } catch (error) {
-    showToast(error.message, true);
-  }
-}
-
-function showOrderConfirm() {
-  state.showOrderConfirm = true;
-  renderActionCenter();
-}
-
-async function createOrderAction() {
-  if (!state.quote || !state.quoteTokens) return;
-  const checkbox = $("#orderConfirmCheck");
-  if (!checkbox || !checkbox.checked) {
-    showToast("请先确认门店、餐品和金额", true);
-    return;
-  }
-  try {
-    const data = await api("api/orders", {
-      method: "POST",
-      body: JSON.stringify({
-        quoteId: state.quote.id,
-        token: state.quoteTokens.order,
-      }),
-    });
-    state.order = data.order;
-    state.showOrderConfirm = false;
-    renderActionCenter();
-    startOrderPolling();
-    loadReminders(true);
-    showToast("订单已创建，请核对支付页");
-  } catch (error) {
-    if (error.code === "PRICE_CHANGED") {
-      showToast(error.message, true);
-      openActionCenter();
-      return;
-    }
     showToast(error.message, true);
   }
 }
@@ -1166,7 +1894,7 @@ async function unlockPrivateAction() {
       body: JSON.stringify({ passcode }),
     });
     await loadCapabilities();
-    renderActionCenter();
+    renderSteward();
     showToast("私有模式已解锁");
   } catch (error) {
     showToast(error.message, true);
@@ -1178,7 +1906,8 @@ async function refreshOrderAction() {
   try {
     const data = await api(`api/orders/${encodeURIComponent(state.order.id)}`);
     state.order = data.order;
-    renderActionCenter();
+    renderSteward();
+    renderStewardStrip();
     if (state.order.status !== "pending_payment") stopOrderPolling();
     loadReminders(true);
     showToast(`订单状态：${orderStatusLabel(state.order.status)}`);
@@ -1197,7 +1926,8 @@ async function cancelOrderAction() {
     });
     state.order = data.order;
     stopOrderPolling();
-    renderActionCenter();
+    renderSteward();
+    renderStewardStrip();
     loadReminders(true);
     showToast("未支付订单已取消");
   } catch (error) {
@@ -1214,7 +1944,8 @@ async function mockPayAction() {
     });
     state.order = data.order;
     stopOrderPolling();
-    renderActionCenter();
+    renderSteward();
+    renderStewardStrip();
     loadReminders(true);
     showToast("演示支付完成");
   } catch (error) {
@@ -1231,18 +1962,22 @@ function startOrderPolling() {
       stopOrderPolling();
       return;
     }
-    if (Date.now() - state.orderPollStarted > 2 * 60_000) {
+    if (Date.now() - state.orderPollStarted > 5 * 60_000) {
       stopOrderPolling();
       return;
     }
     try {
       const data = await api(`api/orders/${encodeURIComponent(state.order.id)}`);
       state.order = data.order;
-      if (state.order.status !== "pending_payment") stopOrderPolling();
-      if (!els.actionModal.classList.contains("hidden")) renderActionCenter();
+      if (state.order.status !== "pending_payment") {
+        stopOrderPolling();
+        fetchSteward();
+      }
+      if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+      renderStewardStrip();
       loadReminders(true);
     } catch {
-      // polling failures are non-fatal
+      // 轮询失败不打断页面
     }
   }, 5000);
 }
@@ -1288,7 +2023,7 @@ async function loadReminders(quiet = true) {
     const data = await api("api/reminders");
     state.reminders = data.reminders || [];
     updateReminderBadge();
-    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
   } catch {
     if (!quiet) showToast("提醒加载失败", true);
   }
@@ -1300,9 +2035,9 @@ async function loadAccount() {
     state.account = data.account;
     state.accountSource = data.source || "demo";
     state.accountWarnings = data.warnings || [];
-    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
   } catch (error) {
-    if (!els.remindersModal.classList.contains("hidden")) {
+    if (!els.stewardModal.classList.contains("hidden")) {
       showToast(error.message || "权益加载失败", true);
     }
   }
@@ -1312,8 +2047,7 @@ async function loadSubscriptions() {
   try {
     const data = await api("api/subscriptions");
     state.subscriptions = data.subscriptions || [];
-    if (!els.remindersModal.classList.contains("hidden")) renderReminders();
-    if (!els.actionModal.classList.contains("hidden") && state.quote) renderActionCenter();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
   } catch {
     // non-fatal
   }
@@ -1374,7 +2108,7 @@ function renderAccountSection() {
 
 function renderSubscriptionCards() {
   if (!state.subscriptions.length) {
-    return '<p class="empty-copy">还没有固定套餐。先在执行中心把一套方案存为固定套餐。</p>';
+    return '<p class="empty-copy">还没有固定套餐。先在「这一单」里把一套方案存为固定套餐。</p>';
   }
   return state.subscriptions.map((subscription) => {
     const caps = subscription.caps || {};
@@ -1398,75 +2132,15 @@ function renderSubscriptionCards() {
           <span>下次：${subscription.nextRunAt ? formatDateTime(subscription.nextRunAt) : "未排期"}</span>
         </div>
         <div class="subscription-actions">
-          <button type="button" class="mini-button" data-action="toggle-sub" data-sub-id="${escapeAttr(subscription.id)}" data-enabled="${subscription.enabled ? "false" : "true"}">${subscription.enabled ? "关闭" : "开启"}</button>
-          <button type="button" class="mini-button mini-button-red" data-action="run-sub" data-sub-id="${escapeAttr(subscription.id)}">立即复购</button>
-          <button type="button" class="ghost-button" data-action="delete-sub" data-sub-id="${escapeAttr(subscription.id)}">删除</button>
+          <button type="button" class="mini-button" data-steward-action="toggle-sub" data-sub-id="${escapeAttr(subscription.id)}" data-enabled="${subscription.enabled ? "false" : "true"}">${subscription.enabled ? "关闭" : "开启"}</button>
+          <button type="button" class="mini-button mini-button-red" data-steward-action="run-sub" data-sub-id="${escapeAttr(subscription.id)}">立即复购</button>
+          <button type="button" class="ghost-button" data-steward-action="delete-sub" data-sub-id="${escapeAttr(subscription.id)}">删除</button>
         </div>
       </div>`;
   }).join("");
 }
 
-function renderReminders() {
-  const accountHtml = renderAccountSection();
-  const unread = state.reminders.filter((reminder) => !reminder.read).length;
-  const visibleReminders = state.reminders.filter((reminder) => !reminder.read).slice(0, 12);
-  const reminderHtml = visibleReminders.length
-    ? visibleReminders.map((reminder) => `
-        <div class="reminder-item ${reminder.due ? "is-due" : ""} ${reminder.read ? "is-read" : ""}">
-          <span class="reminder-type">${reminderTypeLabel(reminder.type)}</span>
-          <div class="reminder-main">
-            <b>${escapeHtml(reminder.title)}</b>
-            <p>${escapeHtml(reminder.body)}</p>
-            <small>${formatDateTime(reminder.dueAt)}${reminder.due ? " · 已到提醒时间" : ""}</small>
-          </div>
-          ${reminder.read ? '<span class="reminder-read">已读</span>' : `<button type="button" class="mini-button" data-action="mark-reminder" data-reminder-id="${escapeAttr(reminder.id)}">知道了</button>`}
-        </div>`).join("")
-    : '<p class="empty-copy">暂无提醒。报价、支付和券到期时会在这里出现。</p>';
-
-  els.remindersContent.innerHTML = `
-    <div class="detail-hero">
-      <div>
-        <p class="card-kicker">提醒中心 · ${unread} 条未读</p>
-        <h2 id="remindersTitle">权益、订单与固定套餐</h2>
-        <p class="detail-sub">${state.accountSource === "live" ? "实时账户数据" : "演示账户数据"} · 提醒只保存在本机服务端</p>
-      </div>
-      <div class="topbar-right">
-        <button type="button" class="ghost-button" data-action="reconcile">一键对账</button>
-        <button type="button" class="ghost-button" data-action="reload-reminders">刷新</button>
-      </div>
-    </div>
-    <div class="detail-section">
-      <h3>我的权益</h3>
-      ${accountHtml}
-    </div>
-    <div class="detail-section">
-      <h3>提醒</h3>
-      <div class="reminder-list">${reminderHtml}</div>
-    </div>
-    <div class="detail-section">
-      <h3>固定套餐复购</h3>
-      <div class="subscription-list">${renderSubscriptionCards()}</div>
-      <p class="form-help">自动复购默认关闭；开启后受单次金额、每日次数和间隔限制，达到上限会自动暂停。实时自动复购只在单用户私有模式生效。</p>
-    </div>
-    <div class="modal-actions">
-      <button type="button" class="ghost-button" data-action="mark-all-read">全部标记已读</button>
-    </div>
-  `;
-}
-
-async function openReminders() {
-  openModal("reminders");
-  els.remindersContent.innerHTML = `
-    <div class="empty-state">
-      <p class="card-kicker">提醒中心</p>
-      <h2 id="remindersTitle">正在加载权益与提醒</h2>
-      <p>积分、券、活动、订单状态和复购计划会汇总到这里。</p>
-      <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
-    </div>`;
-  await Promise.allSettled([loadReminders(false), loadAccount(), loadSubscriptions()]);
-  renderReminders();
-}
-
+// 提醒中心已并入管家中心，旧的独立入口不再保留。
 async function markReminderAction(reminderId) {
   try {
     await api(`api/reminders/${encodeURIComponent(reminderId)}/read`, {
@@ -1476,7 +2150,7 @@ async function markReminderAction(reminderId) {
     const reminder = state.reminders.find((item) => item.id === reminderId);
     if (reminder) reminder.read = true;
     updateReminderBadge();
-    renderReminders();
+    renderSteward();
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1496,7 +2170,7 @@ async function markAllRemindersRead() {
     }
   }
   updateReminderBadge();
-  renderReminders();
+  renderSteward();
 }
 
 async function reconcileAction() {
@@ -1508,15 +2182,15 @@ async function reconcileAction() {
         : "没有发现重复未支付订单",
     );
     await loadReminders(true);
-    if (!els.actionModal.classList.contains("hidden")) renderActionCenter();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
   } catch (error) {
     showToast(error.message, true);
   }
 }
 
 function showSubscriptionForm() {
-  state.showSubForm = true;
-  renderActionCenter();
+  state.steward.showSubForm = true;
+  renderSteward();
 }
 
 async function saveSubscriptionAction() {
@@ -1540,9 +2214,9 @@ async function saveSubscriptionAction() {
         autoOrder,
       }),
     });
-    state.showSubForm = false;
+    state.steward.showSubForm = false;
     await loadSubscriptions();
-    renderActionCenter();
+    renderSteward();
     showToast("固定套餐已保存");
   } catch (error) {
     showToast(error.message, true);
@@ -1556,7 +2230,7 @@ async function toggleSubscriptionAction(subscriptionId, enabled) {
       body: JSON.stringify({ enabled }),
     });
     await loadSubscriptions();
-    renderReminders();
+    renderSteward();
     showToast(enabled ? "固定套餐已开启" : "固定套餐已暂停");
   } catch (error) {
     showToast(error.message, true);
@@ -1573,11 +2247,12 @@ async function runSubscriptionAction(subscriptionId) {
     state.quoteTokens = data.tokens;
     state.order = data.order || null;
     state.quoteExpired = false;
-    state.showOrderConfirm = false;
-    state.showSubForm = false;
-    openModal("action");
-    renderActionCenter();
-    startQuoteTimer();
+    state.steward.confirmOpen = false;
+    state.steward.showSubForm = false;
+    setPhase(state.order ? "ordered" : "ready");
+    openModal("steward");
+    renderSteward();
+    startStewardTimer();
     if (state.order) startOrderPolling();
     await loadSubscriptions();
     await loadReminders(true);
@@ -1592,7 +2267,7 @@ async function deleteSubscriptionAction(subscriptionId) {
   try {
     await api(`api/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" });
     await loadSubscriptions();
-    renderReminders();
+    renderSteward();
     showToast("固定套餐已删除");
   } catch (error) {
     showToast(error.message, true);
@@ -1642,8 +2317,20 @@ function bindEvents() {
   els.optimizeBtn.addEventListener("click", optimizeNow);
   els.againBtn.addEventListener("click", optimizeNow);
   els.historyBtn.addEventListener("click", showHistory);
-  if (els.actionCenterBtn) els.actionCenterBtn.addEventListener("click", openActionCenter);
-  if (els.remindersBtn) els.remindersBtn.addEventListener("click", openReminders);
+  if (els.stewardBtn) els.stewardBtn.addEventListener("click", openSteward);
+  if (els.remindersBtn) els.remindersBtn.addEventListener("click", openSteward);
+  if (els.stewardOpenBtn) els.stewardOpenBtn.addEventListener("click", openSteward);
+  if (els.stewardPrimaryBtn) {
+    els.stewardPrimaryBtn.addEventListener("click", () => {
+      handleStewardAction(els.stewardPrimaryBtn.dataset.stewardAction);
+    });
+  }
+  if (els.stewardConfirm) {
+    els.stewardConfirm.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-steward-action]");
+      if (target) handleStewardAction(target.dataset.stewardAction, target.dataset);
+    });
+  }
   els.storeBtn.addEventListener("click", () => {
     renderStoreList();
     openModal("store");
@@ -1654,6 +2341,9 @@ function bindEvents() {
   });
   els.infoBtn.addEventListener("click", () => openModal("info"));
   els.footerInfoBtn.addEventListener("click", () => openModal("info"));
+  if (els.liveForm) els.liveForm.addEventListener("submit", saveLiveToken);
+  if (els.liveReveal) els.liveReveal.addEventListener("click", toggleLiveToken);
+  if (els.liveDisconnect) els.liveDisconnect.addEventListener("click", disconnectLive);
   els.planCards.addEventListener("click", (event) => {
     const action = event.target.closest("[data-action]");
     if (!action) return;
@@ -1673,57 +2363,41 @@ function bindEvents() {
     if (action.dataset.action === "share") sharePlan(findPlan(planId));
     if (action.dataset.action === "clear-history") clearHistory();
   });
-  if (els.actionContent) {
-    els.actionContent.addEventListener("click", (event) => {
-      const action = event.target.closest("[data-action]");
-      if (!action) return;
-      const actionName = action.dataset.action;
-      if (actionName === "retry-quote") openActionCenter();
-      if (actionName === "claim-coupon") claimCouponAction();
-      if (actionName === "show-order-confirm") showOrderConfirm();
-      if (actionName === "create-order") createOrderAction();
-      if (actionName === "unlock") unlockPrivateAction();
-      if (actionName === "refresh-order") refreshOrderAction();
-      if (actionName === "cancel-order") cancelOrderAction();
-      if (actionName === "mock-pay") mockPayAction();
-      if (actionName === "copy-quote") copyQuoteAction();
-      if (actionName === "show-sub-form") showSubscriptionForm();
-      if (actionName === "hide-sub-form") {
-        state.showSubForm = false;
-        renderActionCenter();
+  if (els.stewardContent) {
+    els.stewardContent.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-steward-action]");
+      if (!target) return;
+      if (target.dataset.stewardAction === "scroll") {
+        event.preventDefault();
+        $$(".steward-nav button", els.stewardContent).forEach((button) => {
+          button.classList.toggle("is-active", button === target);
+        });
       }
-      if (actionName === "save-sub") saveSubscriptionAction();
-      if (actionName === "reconcile") reconcileAction();
-      if (actionName === "toggle-sub") {
-        toggleSubscriptionAction(action.dataset.subId, action.dataset.enabled === "true");
-      }
-      if (actionName === "run-sub") runSubscriptionAction(action.dataset.subId);
-      if (actionName === "delete-sub") deleteSubscriptionAction(action.dataset.subId);
+      handleStewardAction(target.dataset.stewardAction, target.dataset);
     });
-  }
-  if (els.remindersContent) {
-    els.remindersContent.addEventListener("click", (event) => {
-      const action = event.target.closest("[data-action]");
-      if (!action) return;
-      const actionName = action.dataset.action;
-      if (actionName === "mark-reminder") markReminderAction(action.dataset.reminderId);
-      if (actionName === "mark-all-read") markAllRemindersRead();
-      if (actionName === "reconcile") reconcileAction();
-      if (actionName === "reload-reminders") openReminders();
-      if (actionName === "toggle-sub") {
-        toggleSubscriptionAction(action.dataset.subId, action.dataset.enabled === "true");
-      }
-      if (actionName === "run-sub") runSubscriptionAction(action.dataset.subId);
-      if (actionName === "delete-sub") deleteSubscriptionAction(action.dataset.subId);
+    els.stewardContent.addEventListener("change", (event) => {
+      const input = event.target.closest("[data-steward-action='toggle-auto']");
+      if (!input) return;
+      state.steward.auto[input.dataset.autoId] = input.checked;
+      saveStewardPrefs();
+      showToast(input.checked ? "自动化已开启" : "自动化已关闭");
+    });
+    els.stewardContent.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target = event.target.closest(".switch-row-compact");
+      if (!target) return;
+      event.preventDefault();
+      const input = $("input", target);
+      if (input) input.click();
     });
   }
   els.stickyDetail.addEventListener("click", () => {
     const plan = selectedPlan();
     if (plan) openDetail(plan.id);
   });
-  els.stickyCopy.addEventListener("click", () => {
-    const plan = selectedPlan();
-    if (plan) copyPlan(plan);
+  els.stickyOrder.addEventListener("click", () => {
+    if (state.result) requestOrder();
+    else openSteward();
   });
   $$("[data-close]").forEach((button) => {
     button.addEventListener("click", () => closeModal(button.dataset.close));
@@ -1793,11 +2467,13 @@ function init() {
   state.history = loadHistory();
   updateHistoryTotal();
   loadPrefs();
+  loadStewardPrefs();
   bindEvents();
   syncChips();
   renderStoreList();
   registerServiceWorker();
   loadBootstrap();
+  loadLiveStatus();
   state.reminderTimer = setInterval(() => loadReminders(true), 30_000);
 }
 

@@ -1,9 +1,10 @@
-const CACHE_NAME = "maimen-save-one-v1";
+const CACHE_NAME = "maimen-save-one-v3";
+const VERSION = "1.3.0";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
+  `./styles.css?v=${VERSION}`,
+  `./app.js?v=${VERSION}`,
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

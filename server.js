@@ -28,7 +28,17 @@ import {
   listReminders,
   markReminderRead,
   listAudit,
+  latestQuoteAndOrder,
+  latestSubscriptionRun,
 } from "./lib/action-service.js";
+import { buildStewardView } from "./lib/steward.js";
+import {
+  loadStoredToken,
+  saveStoredToken,
+  clearStoredToken,
+  normalizeToken,
+  classifyConnectError,
+} from "./lib/live-config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +65,7 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PUBLIC_DIR = path.join(__dirname, "public");
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.3.0";
 const PORT = Number(process.env.PORT || 8899);
 const HOST = process.env.HOST || "127.0.0.1";
 const MCD_MCP_TOKEN = (process.env.MCD_MCP_TOKEN || "").trim();
@@ -107,25 +117,118 @@ let liveClient = null;
 let liveState = ENABLE_LIVE ? "starting" : "disabled";
 let liveError = "";
 let liveOptimize = null;
+// mcp-live.js 是动态导入，demo 模式不会加载；轨迹读取器默认空实现。
+let readToolTrace = () => [];
+let liveCheckedAt = null;
+let liveLastError = null;
+let storedTokenPresent = false;
+let liveSource = "none";
+
+const LIVE_SETUP_DISABLED = process.env.DISABLE_LIVE_SETUP === "true";
+const CONNECT_TIMEOUT_MS = Math.max(3000, Number(process.env.LIVE_CONNECT_TIMEOUT_MS || 12000));
+
+function withDeadline(promise, ms, label = "连接") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}超时`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function loadMcpModule() {
+  const module = await import("./lib/mcp-live.js");
+  liveOptimize = module.optimizeLive;
+  if (typeof module.getToolTrace === "function") readToolTrace = module.getToolTrace;
+  return module;
+}
+
+// 用一次只读工具调用验证 Token：连接成功但不通工具，等价于无效凭据。
+async function verifyToken(token) {
+  const module = await loadMcpModule();
+  const client = await withDeadline(module.createLiveClient(token), CONNECT_TIMEOUT_MS);
+  try {
+    await withDeadline(client.nutrition(), CONNECT_TIMEOUT_MS, "工具调用");
+  } catch (error) {
+    try {
+      await client.close();
+    } catch {
+      // 关闭失败不影响校验结论
+    }
+    throw error;
+  }
+  return client;
+}
+
+function activateLiveClient(client, source) {
+  const previous = liveClient;
+  liveClient = client;
+  liveState = "connected";
+  liveError = "";
+  liveLastError = null;
+  liveCheckedAt = new Date().toISOString();
+  liveSource = source;
+  if (previous && previous !== client) {
+    Promise.resolve(previous.close()).catch(() => {});
+  }
+}
+
+
+
+function liveStatus() {
+  return {
+    setupEnabled: !LIVE_SETUP_DISABLED,
+    connected: Boolean(liveClient),
+    state: liveState,
+    source: liveClient ? liveSource : "none",
+    envManaged: Boolean(MCD_MCP_TOKEN),
+    storedToken: storedTokenPresent,
+    checkedAt: liveCheckedAt,
+    lastError: liveLastError,
+  };
+}
+
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === (req.headers.host || "");
+  } catch {
+    return false;
+  }
+}
 
 async function initLive() {
-  if (!ENABLE_LIVE) {
-    liveState = "disabled";
+  let stored = null;
+  try {
+    stored = await loadStoredToken();
+  } catch {
+    stored = null;
+  }
+  storedTokenPresent = Boolean(stored?.token);
+  const token = MCD_MCP_TOKEN || stored?.token || "";
+  // 页面里保存的 Token 属于用户显式意愿，即使没开 ENABLE_LIVE 也允许恢复连接。
+  const runtimeOptIn = !MCD_MCP_TOKEN && Boolean(stored?.token);
+  if (!token) {
+    liveState = ENABLE_LIVE ? "no-token" : "disabled";
+    liveSource = "none";
     return;
   }
-  if (!MCD_MCP_TOKEN) {
-    liveState = "no-token";
+  if (!ENABLE_LIVE && !runtimeOptIn) {
+    liveState = "disabled";
+    liveSource = "none";
     return;
   }
   try {
-    const module = await import("./lib/mcp-live.js");
-    liveOptimize = module.optimizeLive;
-    liveClient = await module.createLiveClient(MCD_MCP_TOKEN);
+    liveClient = await verifyToken(token);
     liveState = "connected";
+    liveSource = MCD_MCP_TOKEN ? "env" : "stored";
+    liveCheckedAt = new Date().toISOString();
     console.log("[maimen-save-one] live MCP connected");
   } catch (error) {
     liveState = "error";
+    liveLastError = classifyConnectError(error);
     liveError = error instanceof Error ? error.message : String(error);
+    liveCheckedAt = new Date().toISOString();
     console.error("[maimen-save-one] live MCP unavailable:", liveError);
   }
 }
@@ -474,6 +577,9 @@ async function handleApi(req, res, pathname) {
       liveError: liveState === "error" ? "实时接口暂不可用" : "",
       writeMode: capabilities(req).writeMode,
       singleUser: SINGLE_USER_MODE,
+      liveSource,
+      liveStored: storedTokenPresent,
+      liveSetup: !LIVE_SETUP_DISABLED,
       uptimeSeconds: Math.round(process.uptime()),
       time: new Date().toISOString(),
     });
@@ -482,6 +588,101 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "GET" && pathname === "/api/capabilities") {
     sendJson(res, 200, { ok: true, ...capabilities(req) });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/live/status") {
+    sendJson(res, 200, { ok: true, ...liveStatus() });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/live/token") {
+    if (LIVE_SETUP_DISABLED) {
+      throw new ActionError(
+        "SETUP_DISABLED",
+        "当前部署已关闭页面接入，请用环境变量 MCD_MCP_TOKEN 配置",
+        403,
+      );
+    }
+    if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
+    if (!allowRequest(clientIp(req), 5, 60_000)) {
+      sendJson(res, 429, {
+        ok: false,
+        code: "RATE_LIMITED",
+        error: "校验太频繁，请 1 分钟后再试",
+        ...liveStatus(),
+      });
+      return true;
+    }
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    const checked = normalizeToken(body.token);
+    if (!checked.ok) {
+      sendJson(res, 400, { ok: false, code: checked.code, error: checked.message, ...liveStatus() });
+      return true;
+    }
+    try {
+      const client = await verifyToken(checked.token);
+      activateLiveClient(client, "stored");
+      await saveStoredToken(checked.token);
+      storedTokenPresent = true;
+      sendJson(res, 200, { ok: true, ...liveStatus(), capabilities: capabilities(req) });
+    } catch (error) {
+      const classified = classifyConnectError(error);
+      liveLastError = classified;
+      liveCheckedAt = new Date().toISOString();
+      if (!liveClient) liveState = "error";
+      console.error("[maimen-save-one] live token rejected:", classified.code);
+      sendJson(res, 502, {
+        ok: false,
+        code: classified.code,
+        error: classified.message,
+        ...liveStatus(),
+      });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/live/disconnect") {
+    if (LIVE_SETUP_DISABLED) {
+      throw new ActionError("SETUP_DISABLED", "当前部署已关闭页面接入", 403);
+    }
+    if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
+    const envManaged = Boolean(MCD_MCP_TOKEN);
+    await clearStoredToken().catch(() => {});
+    storedTokenPresent = false;
+    const previous = liveClient;
+    liveClient = null;
+    liveOptimize = null;
+    readToolTrace = () => [];
+    liveState = envManaged && ENABLE_LIVE ? "no-token" : "disabled";
+    liveSource = "none";
+    liveLastError = null;
+    liveCheckedAt = null;
+    if (previous) Promise.resolve(previous.close()).catch(() => {});
+    sendJson(res, 200, {
+      ok: true,
+      note: envManaged ? "环境变量中的 Token 会在服务重启后重新连接" : "",
+      ...liveStatus(),
+    });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/steward") {
+    const [{ quote, order }, subscriptionRunAt] = await Promise.all([
+      latestQuoteAndOrder(),
+      latestSubscriptionRun(),
+    ]);
+    const view = buildStewardView({
+      mode: liveClient ? "live" : "demo",
+      liveState,
+      trace: readToolTrace(),
+      lastQuote: quote,
+      lastOrder: order,
+      capabilities: capabilities(req),
+      subscriptionRunAt,
+    });
+    sendJson(res, 200, { ok: true, ...view });
     return true;
   }
 
@@ -501,6 +702,7 @@ async function handleApi(req, res, pathname) {
         coupons: DEMO_COUPONS.length,
       },
       capabilities: capabilities(req),
+      live: liveStatus(),
       generatedAt: new Date().toISOString(),
     });
     return true;
