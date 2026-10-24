@@ -1183,11 +1183,27 @@ function renderStewardStrip() {
   els.stewardConfirm.innerHTML = state.steward.confirmOpen ? stewardConfirmHtml() : "";
 }
 
+function writeNeedsUnlock() {
+  const caps = state.capabilities || {};
+  return caps.writeMode === "private" && !caps.unlocked && Boolean(caps.writePasscodeRequired);
+}
+
 function stewardConfirmHtml() {
   const quote = state.quote;
   if (!quote) return "";
   const plan = quote.plan;
   const coupon = plan.coupon;
+  const locked = writeNeedsUnlock();
+  const action = locked
+    ? `
+      <div class="steward-confirm-unlock">
+        <label for="confirmPasscode">实时下单已锁定，输入私有模式口令后即可生成待支付订单</label>
+        <div class="live-input-row">
+          <input id="confirmPasscode" type="password" autocomplete="off" placeholder="私有模式口令">
+          <button type="button" class="select-button" data-steward-action="unlock-confirm" ${state.steward.busy ? "disabled" : ""}>解锁并下单</button>
+        </div>
+      </div>`
+    : `<button type="button" class="select-button" data-steward-action="confirm-create" ${state.steward.busy ? "disabled" : ""}>确认生成待支付订单</button>`;
   return `
     <b>确认这一单</b>
     <div class="steward-confirm-rows">
@@ -1198,7 +1214,7 @@ function stewardConfirmHtml() {
       <div><span>实付</span><b>${money(plan.price.finalCents)}</b></div>
     </div>
     <div class="steward-confirm-actions">
-      <button type="button" class="select-button" data-steward-action="confirm-create" ${state.steward.busy ? "disabled" : ""}>确认生成待支付订单</button>
+      ${action}
       <button type="button" class="text-button" data-steward-action="confirm-cancel">再想想</button>
     </div>`;
 }
@@ -1376,10 +1392,48 @@ async function confirmOrderAction() {
       showToast(error.code === "PRICE_CHANGED" ? "价格已变化，请重新确认" : "报价已更新，请重新确认", true);
       return;
     }
+    if (error.code === "WRITE_LOCKED" || error.status === 401) {
+      await loadCapabilities();
+      state.steward.confirmOpen = true;
+      showToast("实时下单需要先解锁私有模式，请在确认卡里输入口令", true);
+      setTimeout(() => $("#confirmPasscode")?.focus(), 60);
+      return;
+    }
     showToast(error.message, true);
   } finally {
     state.steward.busy = false;
     renderStewardStrip();
+  }
+}
+
+// 在确认卡里直接解锁，解锁成功后自动继续生成待支付订单（仍需用户点了才下单）。
+async function unlockAndConfirm() {
+  const input = $("#confirmPasscode");
+  const passcode = input?.value?.trim();
+  if (!passcode) {
+    showToast("请输入私有模式口令", true);
+    input?.focus();
+    return;
+  }
+  if (state.steward.busy) return;
+  state.steward.busy = true;
+  renderStewardStrip();
+  try {
+    await api("api/private/unlock", {
+      method: "POST",
+      body: JSON.stringify({ passcode }),
+    });
+    await loadCapabilities();
+    state.steward.busy = false;
+    renderStewardStrip();
+    if (!els.stewardModal.classList.contains("hidden")) renderSteward();
+    showToast("私有模式已解锁，正在生成待支付订单");
+    await confirmOrderAction();
+  } catch (error) {
+    state.steward.busy = false;
+    renderStewardStrip();
+    showToast(error.message || "解锁失败，请检查口令", true);
+    $("#confirmPasscode")?.focus();
   }
 }
 
@@ -1790,6 +1844,7 @@ function stewardScrollTo(targetId) {
 function handleStewardAction(name, data = {}) {
   if (name === "confirm") return requestOrder();
   if (name === "confirm-create") return confirmOrderAction();
+  if (name === "unlock-confirm") return unlockAndConfirm();
   if (name === "confirm-cancel") {
     state.steward.confirmOpen = false;
     renderStewardStrip();
@@ -2329,6 +2384,11 @@ function bindEvents() {
     els.stewardConfirm.addEventListener("click", (event) => {
       const target = event.target.closest("[data-steward-action]");
       if (target) handleStewardAction(target.dataset.stewardAction, target.dataset);
+    });
+    els.stewardConfirm.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.target.id !== "confirmPasscode") return;
+      event.preventDefault();
+      unlockAndConfirm();
     });
   }
   els.storeBtn.addEventListener("click", () => {

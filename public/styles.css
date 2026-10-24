@@ -1395,6 +1395,28 @@ svg {
   align-items: center;
 }
 
+.steward-confirm-unlock {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.steward-confirm-unlock label {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.steward-confirm-unlock .live-input-row input {
+  height: 38px;
+}
+
+.steward-confirm-unlock .select-button {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 /* ---------- 省单管家：中心 ---------- */
 
 .steward-nav {
