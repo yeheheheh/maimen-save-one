@@ -2311,26 +2311,6 @@ svg {
   }
 }
 
-@media (max-width: 380px) {
-  .brand-copy strong {
-    font-size: 16px;
-  }
-
-  .topbar-star {
-    padding: 0 8px;
-  }
-
-  .star-label-short {
-    display: none;
-  }
-
-  .mode-badge {
-    gap: 5px;
-    padding: 0 8px;
-    font-size: 10px;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .star-button,
   .topbar-star {
@@ -3592,6 +3572,28 @@ svg {
   .detail-hero {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+/* 窄于 380px：顶栏改成图标版点星，避免和品牌、徽标挤成三行。
+   必须排在 560px 断点之后，否则 .star-label-short 会被重新 display:inline 覆盖。 */
+@media (max-width: 380px) {
+  .brand-copy strong {
+    font-size: 16px;
+  }
+
+  .topbar-star {
+    padding: 0 8px;
+  }
+
+  .star-label-short {
+    display: none;
+  }
+
+  .mode-badge {
+    gap: 5px;
+    padding: 0 8px;
+    font-size: 10px;
   }
 }
 
