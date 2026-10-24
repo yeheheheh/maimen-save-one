@@ -117,6 +117,7 @@ svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   width: min(1120px, calc(100% - 40px));
   margin: 0 auto;
   padding: 22px 0 10px;
@@ -168,26 +169,57 @@ svg {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .topbar-star {
-  color: var(--red);
-  border-color: rgba(218, 41, 28, 0.28);
-  background: var(--gold-soft);
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 13px 0 11px;
+  border: 1px solid rgba(218, 41, 28, 0.3);
+  border-radius: var(--radius-pill);
+  color: var(--red-dark);
+  background: linear-gradient(135deg, var(--gold-soft), rgba(255, 199, 44, 0.58));
+  box-shadow: 0 4px 12px rgba(255, 199, 44, 0.3);
+  font-size: 11.5px;
+  font-weight: 900;
+  white-space: nowrap;
+  transition: 160ms ease;
 }
 
 .topbar-star svg {
-  width: 17px;
-  height: 17px;
+  flex: none;
+  width: 15px;
+  height: 15px;
   fill: var(--gold);
   stroke: var(--red);
-  stroke-width: 1.3;
+  stroke-width: 1.4;
+}
+
+.star-label-short {
+  display: none;
 }
 
 .topbar-star:hover {
   border-color: var(--red);
-  background: var(--gold);
+  color: #fff;
+  background: var(--red);
+  box-shadow: 0 8px 18px rgba(218, 41, 28, 0.28);
   transform: translateY(-1px);
+}
+
+.topbar-star:hover svg {
+  fill: var(--gold);
+  stroke: none;
+}
+
+.topbar-star:focus-visible {
+  outline: 3px solid rgba(255, 199, 44, 0.75);
+  outline-offset: 2px;
 }
 
 .mode-badge {
@@ -2268,10 +2300,6 @@ svg {
 }
 
 @media (max-width: 560px) {
-  .topbar-star {
-    display: none;
-  }
-
   .star-button {
     width: 100%;
     justify-content: center;
@@ -2280,6 +2308,26 @@ svg {
 
   .star-cta-actions {
     gap: 10px;
+  }
+}
+
+@media (max-width: 380px) {
+  .brand-copy strong {
+    font-size: 16px;
+  }
+
+  .topbar-star {
+    padding: 0 8px;
+  }
+
+  .star-label-short {
+    display: none;
+  }
+
+  .mode-badge {
+    gap: 5px;
+    padding: 0 8px;
+    font-size: 10px;
   }
 }
 
@@ -3424,6 +3472,44 @@ svg {
   .topbar {
     width: calc(100% - 28px);
     padding-top: 16px;
+    gap: 10px;
+  }
+
+  .brand {
+    flex: none;
+  }
+
+  .brand-copy strong {
+    font-size: 17px;
+    white-space: nowrap;
+  }
+
+  .topbar-right {
+    gap: 6px;
+  }
+
+  .topbar-star {
+    min-height: 32px;
+    padding: 0 10px 0 9px;
+    gap: 5px;
+    font-size: 10.5px;
+  }
+
+  .topbar-star svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .star-label {
+    display: none;
+  }
+
+  .star-label-short {
+    display: inline;
+  }
+
+  .topbar-right #infoBtn {
+    display: none;
   }
 
   .brand-mark {
@@ -3431,10 +3517,6 @@ svg {
     height: 38px;
     border-radius: 12px 12px 12px 4px;
     font-size: 19px;
-  }
-
-  .brand-copy strong {
-    font-size: 18px;
   }
 
   .shell {
