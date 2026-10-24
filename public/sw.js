@@ -1,5 +1,5 @@
-const CACHE_NAME = "maimen-save-one-v4";
-const VERSION = "1.3.1";
+const CACHE_NAME = "maimen-save-one-v5";
+const VERSION = "1.3.2";
 const ASSETS = [
   "./",
   "./index.html",

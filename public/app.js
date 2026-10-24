@@ -1424,6 +1424,8 @@ async function unlockAndConfirm() {
       body: JSON.stringify({ passcode }),
     });
     await loadCapabilities();
+    // 解锁前领券会被拒；解锁后先把最优券领到账号，避免 create-order 因券未绑定而重新核价。
+    if (autoOn("autoClaim")) await autoClaimCoupon();
     state.steward.busy = false;
     renderStewardStrip();
     if (!els.stewardModal.classList.contains("hidden")) renderSteward();
