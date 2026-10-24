@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
-  <link rel="stylesheet" href="./styles.css?v=1.3.5">
+  <link rel="stylesheet" href="./styles.css?v=1.3.6">
 </head>
 <body>
   <div class="page-glow" aria-hidden="true"></div>
@@ -166,6 +166,11 @@
             <p class="card-kicker">可选 · 一次配置</p>
             <h2 id="liveSetupTitle">接入麦当劳 MCP</h2>
             <p class="live-setup-lead">填入 Token 后改用真实门店、菜单与官方核价；Token 只存在服务端，页面不会保存。</p>
+            <a class="live-source" id="liveSourceLink" href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6"></path><path d="M20 4 10.5 13.5"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
+              <span>还没有 Token？去 open.mcd.cn/mcp 获取</span>
+              <span class="live-source-arrow" aria-hidden="true">↗</span>
+            </a>
           </div>
           <span class="live-pill" id="livePill" data-state="demo">演示数据</span>
         </div>
@@ -188,7 +193,7 @@
           <ol class="live-steps">
             <li>
               <b>拿到 Token</b>
-              <span>在麦当劳 MCP 控制台生成，是一串不含空格的长字符。</span>
+              <span>在 <a href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">open.mcd.cn/mcp</a> 生成，是一串不含空格的长字符。</span>
             </li>
             <li>
               <b>保存并校验</b>
@@ -204,6 +209,7 @@
         <details class="live-faq">
           <summary>常见问题与报错</summary>
           <ul>
+            <li><b>去哪拿 Token：</b>麦当劳 MCP 开放平台 <a href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">open.mcd.cn/mcp</a>，登录后在应用/密钥页面生成。</li>
             <li><b>401 / 校验未通过：</b>Token 复制不完整或已失效，重新生成后再试。</li>
             <li><b>连接超时：</b>服务端访问不了 <code>mcp.mcd.cn</code>，检查网络、防火墙或代理。</li>
             <li><b>能算价但不能下单：</b>实时写操作需要服务端开启单用户私有模式并解锁，这是刻意保留的安全边界。</li>
@@ -398,6 +404,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js?v=1.3.5"></script>
+  <script type="module" src="./app.js?v=1.3.6"></script>
 </body>
 </html>

@@ -828,6 +828,62 @@ svg {
   line-height: 1.6;
 }
 
+/* 去官网拿 Token 的入口：比正文更亮，但不抢主按钮的视觉层级 */
+.live-source {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  margin-top: 11px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid rgba(218, 41, 28, 0.26);
+  border-radius: var(--radius-pill);
+  color: var(--red-dark);
+  background: rgba(255, 240, 237, 0.85);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.3;
+  transition: 160ms ease;
+}
+
+.live-source svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.live-source-arrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.live-source:hover {
+  border-color: var(--red);
+  color: #fff;
+  background: var(--red);
+  transform: translateY(-1px);
+}
+
+.live-source:focus-visible {
+  outline: 3px solid rgba(255, 199, 44, 0.75);
+  outline-offset: 2px;
+}
+
+.live-steps a {
+  color: var(--red-dark);
+  font-weight: 800;
+  border-bottom: 1px solid rgba(218, 41, 28, 0.35);
+}
+
+.live-steps a:hover {
+  border-color: var(--red);
+}
+
 .live-pill {
   flex: none;
   display: inline-flex;
@@ -1055,6 +1111,16 @@ svg {
   line-height: 1.65;
 }
 
+.live-faq a {
+  color: var(--red-dark);
+  font-weight: 800;
+  border-bottom: 1px solid rgba(218, 41, 28, 0.3);
+}
+
+.live-faq a:hover {
+  border-color: var(--red);
+}
+
 .live-faq code {
   padding: 1px 5px;
   border-radius: 5px;
@@ -1081,6 +1147,14 @@ svg {
   .live-setup-head {
     flex-direction: column;
     gap: 10px;
+  }
+
+  .live-source {
+    margin-top: 10px;
+    width: 100%;
+    justify-content: center;
+    min-height: 42px;
+    text-align: center;
   }
 
   .live-setup-grid {

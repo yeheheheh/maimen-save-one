@@ -65,7 +65,7 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PUBLIC_DIR = path.join(__dirname, "public");
-const APP_VERSION = "1.3.5";
+const APP_VERSION = "1.3.6";
 const PORT = Number(process.env.PORT || 8899);
 const HOST = process.env.HOST || "127.0.0.1";
 const MCD_MCP_TOKEN = (process.env.MCD_MCP_TOKEN || "").trim();
