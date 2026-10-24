@@ -33,6 +33,7 @@ import {
 } from "./lib/action-service.js";
 import { buildStewardView } from "./lib/steward.js";
 import { LiveRegistry } from "./lib/live-registry.js";
+import { loadStoredToken } from "./lib/live-config.js";
 import { buildCapabilities, writeDecision } from "./lib/access.js";
 import { getUser, listUsers, publicBinding, CONSENT_VERSION } from "./lib/user-store.js";
 import {
@@ -190,6 +191,19 @@ function sameOrigin(req) {
 }
 
 async function initLive() {
+  // 1.x 只支持一份全局 Token（data/live-token.json）。2.0 起用户各自的 Token 存在
+  // data/users/，旧文件降级为「我方 MCP 体验账号」，只读、不替任何人下单。
+  if (!registry.hostToken) {
+    try {
+      const legacy = await loadStoredToken();
+      if (legacy?.token) {
+        registry.hostToken = legacy.token;
+        console.log("[maimen-save-one] adopted legacy token as read-only host account");
+      }
+    } catch {
+      // 旧文件损坏时忽略，退回演示数据
+    }
+  }
   await registry.initHost();
   hostError = registry.host.lastError?.message || "";
   if (registry.host.state === "connected") {
