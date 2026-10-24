@@ -5,3 +5,6 @@ data/
 *.log
 .DS_Store
 Thumbs.db
+
+# 与本项目无关的本地产物
+promo-douyin/

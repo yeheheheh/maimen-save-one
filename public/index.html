@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
-  <link rel="stylesheet" href="./styles.css?v=1.3.6">
+  <link rel="stylesheet" href="./styles.css?v=2.0.0">
 </head>
 <body>
   <div class="page-glow" aria-hidden="true"></div>
@@ -163,58 +163,89 @@
       <section class="live-setup" id="liveSetup" aria-labelledby="liveSetupTitle">
         <div class="live-setup-head">
           <div>
-            <p class="card-kicker">可选 · 一次配置</p>
-            <h2 id="liveSetupTitle">接入麦当劳 MCP</h2>
-            <p class="live-setup-lead">填入 Token 后改用真实门店、菜单与官方核价；Token 只存在服务端，页面不会保存。</p>
+            <p class="card-kicker">我的账号 · 一次绑定</p>
+            <h2 id="liveSetupTitle">用你自己的麦当劳账号下单</h2>
+            <p class="live-setup-lead">未绑定前可以用我方 MCP 体验真实菜单与核价，但不会替你下单。绑定你自己的 Token 后，报价、领券、订单都走你自己的账号，彼此隔离。</p>
             <a class="live-source" id="liveSourceLink" href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6"></path><path d="M20 4 10.5 13.5"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
               <span>还没有 Token？去 open.mcd.cn/mcp 获取</span>
               <span class="live-source-arrow" aria-hidden="true">↗</span>
             </a>
           </div>
-          <span class="live-pill" id="livePill" data-state="demo">演示数据</span>
+          <span class="live-pill" id="livePill" data-state="demo">体验模式</span>
+        </div>
+
+        <div class="auth-state" id="authState" data-mode="host">
+          <div class="auth-state-icon" id="authStateIcon" aria-hidden="true">i</div>
+          <div class="auth-state-body">
+            <b id="authStateTitle">正在读取授权状态…</b>
+            <p id="authStateText">马上就好。</p>
+          </div>
         </div>
 
         <div class="live-setup-grid">
           <form class="live-form" id="liveForm" novalidate>
-            <label class="live-label" for="liveToken">MCP Token</label>
+            <label class="live-label" for="liveToken">麦当劳 MCP Token</label>
             <div class="live-input-row">
-              <input id="liveToken" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 MCD_MCP_TOKEN" aria-describedby="liveHint">
+              <input id="liveToken" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴你自己的 MCD_MCP_TOKEN" aria-describedby="liveHint">
               <button type="button" class="ghost-button" id="liveReveal" aria-label="显示或隐藏 Token">显示</button>
             </div>
+            <label class="consent-row" for="liveConsent">
+              <input type="checkbox" id="liveConsent">
+              <span>我授权本站使用本人的麦当劳账号读取门店与券、并在我在场确认后提交待支付订单；不会自动付款。</span>
+            </label>
             <div class="live-actions">
-              <button type="submit" class="select-button" id="liveSave">保存并校验</button>
-              <button type="button" class="ghost-button hidden" id="liveDisconnect">断开连接</button>
+              <button type="submit" class="select-button" id="liveSave" disabled>绑定我的账号</button>
+              <button type="button" class="ghost-button hidden" id="liveDisconnect">解绑</button>
             </div>
-            <p class="live-hint" id="liveHint">Token 只提交到本机服务端；校验通过才落盘，且不会回显到页面或接口。</p>
+            <p class="live-hint" id="liveHint">Token 只存在服务端，按浏览器身份隔离保存；页面不回显、不写 localStorage。</p>
             <div class="live-feedback hidden" id="liveFeedback" role="status" aria-live="polite"></div>
           </form>
 
-          <ol class="live-steps">
+          <div class="identity-panel hidden" id="identityPanel">
+            <p class="live-label">已授权的账号</p>
+            <div class="identity-card">
+              <div class="identity-avatar" id="identityAvatar" aria-hidden="true">M</div>
+              <div class="identity-main">
+                <b id="identityName">已绑定</b>
+                <small id="identityMeta">—</small>
+              </div>
+              <span class="identity-badge" id="identityBadge">已授权</span>
+            </div>
+            <dl class="identity-rows">
+              <div><dt>订单归属</dt><dd id="identityOwner">仅本浏览器</dd></div>
+              <div><dt>Token</dt><dd id="identityToken">••••</dd></div>
+              <div><dt>授权范围</dt><dd>读取 + 待支付订单</dd></div>
+            </dl>
+            <p class="identity-note">换浏览器或清除 Cookie 后需要重新绑定；不同用户的数据互不可见。</p>
+          </div>
+
+          <ol class="live-steps" id="liveSteps">
             <li>
               <b>拿到 Token</b>
               <span>在 <a href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">open.mcd.cn/mcp</a> 生成，是一串不含空格的长字符。</span>
             </li>
             <li>
-              <b>保存并校验</b>
-              <span>服务端立即连接 MCP 并试调一个只读工具，通过后才切换到实时数据。</span>
+              <b>勾选授权并绑定</b>
+              <span>服务端会连一次 MCP、读一次账号身份，通过后才保存并切换成你的账号。</span>
             </li>
             <li>
-              <b>重新算一单</b>
-              <span>状态变绿后点「一键算最省」，金额以官方 calculate-price 为准。</span>
+              <b>确认后下单</b>
+              <span>每单都会显示商品、门店、券与实付；你点确认才提交待支付订单。</span>
             </li>
           </ol>
         </div>
 
         <details class="live-faq">
-          <summary>常见问题与报错</summary>
+          <summary>授权、隔离与常见报错</summary>
           <ul>
+            <li><b>不绑定能用吗：</b>可以。未绑定时使用我方 MCP 的真实菜单与核价做体验，但下单会被拦截，避免用他人账号消费。</li>
             <li><b>去哪拿 Token：</b>麦当劳 MCP 开放平台 <a href="https://open.mcd.cn/mcp" target="_blank" rel="noreferrer">open.mcd.cn/mcp</a>，登录后在应用/密钥页面生成。</li>
-            <li><b>401 / 校验未通过：</b>Token 复制不完整或已失效，重新生成后再试。</li>
-            <li><b>连接超时：</b>服务端访问不了 <code>mcp.mcd.cn</code>，检查网络、防火墙或代理。</li>
-            <li><b>能算价但不能下单：</b>实时写操作需要服务端开启单用户私有模式并解锁，这是刻意保留的安全边界。</li>
-            <li><b>重启后还要再填吗：</b>不用。Token 保存在 <code>data/live-token.json</code>；若同时配置了环境变量，环境变量优先。</li>
-            <li><b>想彻底关掉这个入口：</b>启动时设 <code>DISABLE_LIVE_SETUP=true</code>。</li>
+            <li><b>授权失败 / 401：</b>Token 复制不完整或已失效，重新生成后再绑定；失败不会覆盖原有绑定。</li>
+            <li><b>读取账号失败：</b>连接通了但取不到身份，通常是权限范围不足，请在开放平台确认已开通账号读取权限。</li>
+            <li><b>Token 失效：</b>页面会标记「授权已失效」，重新绑定即可；失效期间不会重试下单。</li>
+            <li><b>订单提交失败：</b>价格变化会中止并请你重新确认；超时不会盲目重试，可在「这一单」里刷新状态或对账。</li>
+            <li><b>数据隔离：</b>报价、订单、提醒、固定套餐都按浏览器身份归属，A 看不到 B 的任何记录。</li>
           </ul>
         </details>
       </section>
@@ -404,6 +435,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js?v=1.3.6"></script>
+  <script type="module" src="./app.js?v=2.0.0"></script>
 </body>
 </html>

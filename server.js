@@ -32,13 +32,16 @@ import {
   latestSubscriptionRun,
 } from "./lib/action-service.js";
 import { buildStewardView } from "./lib/steward.js";
+import { LiveRegistry } from "./lib/live-registry.js";
+import { buildCapabilities, writeDecision } from "./lib/access.js";
+import { getUser, listUsers, publicBinding, CONSENT_VERSION } from "./lib/user-store.js";
 import {
-  loadStoredToken,
-  saveStoredToken,
-  clearStoredToken,
-  normalizeToken,
-  classifyConnectError,
-} from "./lib/live-config.js";
+  UID_COOKIE,
+  uidCookie,
+  readUid,
+  parseCookies,
+  createUserId,
+} from "./lib/session.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,7 +68,7 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PUBLIC_DIR = path.join(__dirname, "public");
-const APP_VERSION = "1.3.6";
+const APP_VERSION = "2.0.0";
 const PORT = Number(process.env.PORT || 8899);
 const HOST = process.env.HOST || "127.0.0.1";
 const MCD_MCP_TOKEN = (process.env.MCD_MCP_TOKEN || "").trim();
@@ -113,77 +116,66 @@ const MIME = {
   ".woff2": "font/woff2",
 };
 
-let liveClient = null;
-let liveState = ENABLE_LIVE ? "starting" : "disabled";
-let liveError = "";
-let liveOptimize = null;
-// mcp-live.js 是动态导入，demo 模式不会加载；轨迹读取器默认空实现。
-let readToolTrace = () => [];
-let liveCheckedAt = null;
-let liveLastError = null;
-let storedTokenPresent = false;
-let liveSource = "none";
-
 const LIVE_SETUP_DISABLED = process.env.DISABLE_LIVE_SETUP === "true";
-const CONNECT_TIMEOUT_MS = Math.max(3000, Number(process.env.LIVE_CONNECT_TIMEOUT_MS || 12000));
 
-function withDeadline(promise, ms, label = "连接") {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label}超时`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
+// 我方 MCP：只用于「未绑定用户」的只读体验，任何情况下都不替用户下单。
+const registry = new LiveRegistry({ hostToken: MCD_MCP_TOKEN });
+let liveOptimize = null;
+let hostError = "";
 
 async function loadMcpModule() {
   const module = await import("./lib/mcp-live.js");
   liveOptimize = module.optimizeLive;
-  if (typeof module.getToolTrace === "function") readToolTrace = module.getToolTrace;
   return module;
 }
 
-// 用一次只读工具调用验证 Token：连接成功但不通工具，等价于无效凭据。
-async function verifyToken(token) {
-  const module = await loadMcpModule();
-  const client = await withDeadline(module.createLiveClient(token), CONNECT_TIMEOUT_MS);
-  try {
-    await withDeadline(client.nutrition(), CONNECT_TIMEOUT_MS, "工具调用");
-  } catch (error) {
-    try {
-      await client.close();
-    } catch {
-      // 关闭失败不影响校验结论
-    }
-    throw error;
-  }
-  return client;
+function registerCookieHeader(req, res, uid) {
+  const secure = req.headers["x-forwarded-proto"] === "https";
+  res.setHeader("Set-Cookie", uidCookie(uid, SESSION_SECRET, secure));
 }
 
-function activateLiveClient(client, source) {
-  const previous = liveClient;
-  liveClient = client;
-  liveState = "connected";
-  liveError = "";
-  liveLastError = null;
-  liveCheckedAt = new Date().toISOString();
-  liveSource = source;
-  if (previous && previous !== client) {
-    Promise.resolve(previous.close()).catch(() => {});
+/**
+ * 每个请求先确定身份：匿名设备 uid + 该用户是否已绑定自己的 Token。
+ * mode:
+ *   own  —— 已绑定本人 Token，可读写（写仍要逐单确认）
+ *   host —— 未绑定，用我方 MCP 的只读体验，下单会被拦截
+ *   none —— 连我方 MCP 都没有，退回演示数据（允许模拟写）
+ */
+async function resolveContext(req, res) {
+  let uid = readUid(parseCookies(req.headers.cookie)[UID_COOKIE], SESSION_SECRET);
+  if (!uid) {
+    uid = createUserId();
+    registerCookieHeader(req, res, uid);
   }
+  const record = await getUser(uid);
+  const client = registry.clientFor(uid);
+  let mode = "none";
+  if (client && record?.consent?.granted) mode = "own";
+  else if (registry.hostClient) mode = "host";
+  const readClient = mode === "own" ? client : registry.hostClient;
+  return {
+    uid,
+    mode,
+    client: mode === "own" ? client : null,
+    readClient: readClient || null,
+    binding: publicBinding(record),
+    identity: record?.identity || null,
+  };
 }
 
-
-
-function liveStatus() {
+function liveStatus(ctx = null) {
   return {
     setupEnabled: !LIVE_SETUP_DISABLED,
-    connected: Boolean(liveClient),
-    state: liveState,
-    source: liveClient ? liveSource : "none",
+    hostAvailable: Boolean(registry.hostClient),
+    hostState: registry.hostState,
+    connected: ctx ? ctx.mode === "own" : Boolean(registry.hostClient),
+    mode: ctx ? ctx.mode : "unknown",
+    bound: Boolean(ctx?.binding),
+    identity: ctx?.identity || null,
+    checkedAt: ctx?.binding?.updatedAt || null,
+    lastError: null,
     envManaged: Boolean(MCD_MCP_TOKEN),
-    storedToken: storedTokenPresent,
-    checkedAt: liveCheckedAt,
-    lastError: liveLastError,
+    storedToken: Boolean(ctx?.binding),
   };
 }
 
@@ -198,39 +190,22 @@ function sameOrigin(req) {
 }
 
 async function initLive() {
-  let stored = null;
-  try {
-    stored = await loadStoredToken();
-  } catch {
-    stored = null;
+  await registry.initHost();
+  hostError = registry.host.lastError?.message || "";
+  if (registry.host.state === "connected") {
+    console.log("[maimen-save-one] host MCP connected (read-only for guests)");
+  } else if (registry.host.state === "error") {
+    console.error("[maimen-save-one] host MCP unavailable:", hostError);
   }
-  storedTokenPresent = Boolean(stored?.token);
-  const token = MCD_MCP_TOKEN || stored?.token || "";
-  // 页面里保存的 Token 属于用户显式意愿，即使没开 ENABLE_LIVE 也允许恢复连接。
-  const runtimeOptIn = !MCD_MCP_TOKEN && Boolean(stored?.token);
-  if (!token) {
-    liveState = ENABLE_LIVE ? "no-token" : "disabled";
-    liveSource = "none";
-    return;
+
+  // 恢复已绑定用户的连接；单个失败不影响其他人。
+  const uids = await listUsers();
+  let restored = 0;
+  for (const uid of uids) {
+    const entry = await registry.restore(uid);
+    if (entry) restored += 1;
   }
-  if (!ENABLE_LIVE && !runtimeOptIn) {
-    liveState = "disabled";
-    liveSource = "none";
-    return;
-  }
-  try {
-    liveClient = await verifyToken(token);
-    liveState = "connected";
-    liveSource = MCD_MCP_TOKEN ? "env" : "stored";
-    liveCheckedAt = new Date().toISOString();
-    console.log("[maimen-save-one] live MCP connected");
-  } catch (error) {
-    liveState = "error";
-    liveLastError = classifyConnectError(error);
-    liveError = error instanceof Error ? error.message : String(error);
-    liveCheckedAt = new Date().toISOString();
-    console.error("[maimen-save-one] live MCP unavailable:", liveError);
-  }
+  if (restored) console.log(`[maimen-save-one] restored ${restored} user binding(s)`);
 }
 
 function sendJson(res, status, payload, extraHeaders = {}) {
@@ -263,18 +238,6 @@ function clientIp(req) {
   return req.socket.remoteAddress || "unknown";
 }
 
-function parseCookies(req) {
-  const header = req.headers.cookie;
-  if (typeof header !== "string" || !header) return {};
-  const result = {};
-  for (const pair of header.split(";")) {
-    const index = pair.indexOf("=");
-    if (index < 0) continue;
-    result[pair.slice(0, index).trim()] = pair.slice(index + 1).trim();
-  }
-  return result;
-}
-
 function createSessionToken() {
   const payload = Buffer.from(
     JSON.stringify({ scope: "write", exp: Date.now() + SESSION_TTL_MS }),
@@ -305,7 +268,7 @@ function verifySessionToken(token) {
 }
 
 function isUnlocked(req) {
-  return verifySessionToken(parseCookies(req)[WRITE_COOKIE]);
+  return verifySessionToken(parseCookies(req.headers.cookie)[WRITE_COOKIE]);
 }
 
 function writeCookie(req) {
@@ -317,61 +280,24 @@ function clearWriteCookie() {
   return `${WRITE_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
 }
 
-function capabilities(req) {
-  const mode = liveClient ? "live" : "demo";
-  const unlocked = isUnlocked(req);
-  const liveReady =
-    Boolean(liveClient) && ENABLE_WRITE && SINGLE_USER_MODE && Boolean(WRITE_PASSCODE);
-  const demoWrite = mode === "demo" && DEMO_WRITE;
-  const couponClaim = demoWrite || (liveReady && ENABLE_COUPON_CLAIM && unlocked);
-  const orderCreate = demoWrite || (liveReady && ENABLE_ORDER_CREATE && unlocked);
-  const autoRepurchase = demoWrite || (liveReady && ENABLE_AUTO_REPURCHASE && unlocked);
-  return {
-    mode,
-    live: Boolean(liveClient),
-    writeMode: demoWrite ? "demo" : liveReady ? "private" : "disabled",
-    demoWrite,
-    liveWrite: liveReady,
-    unlocked,
-    singleUser: SINGLE_USER_MODE,
-    couponClaim,
-    orderCreate,
-    autoRepurchase,
-    order: orderCreate,
-    autoCancelUnpaid: demoWrite || (liveReady && ENABLE_AUTO_CANCEL_UNPAID),
-    maxOrderCents: MAX_ORDER_CENTS,
-    maxDailyOrders: MAX_DAILY_ORDERS,
-    writePasscodeRequired: liveReady && !unlocked,
-    nutrition: true,
-  };
+const WRITE_FLAGS = () => ({
+  demoWrite: DEMO_WRITE,
+  enableWrite: ENABLE_WRITE,
+  enableCouponClaim: ENABLE_COUPON_CLAIM,
+  enableOrderCreate: ENABLE_ORDER_CREATE,
+  enableAutoRepurchase: ENABLE_AUTO_REPURCHASE,
+  enableAutoCancelUnpaid: ENABLE_AUTO_CANCEL_UNPAID,
+  singleUser: SINGLE_USER_MODE,
+  maxOrderCents: MAX_ORDER_CENTS,
+  maxDailyOrders: MAX_DAILY_ORDERS,
+});
+
+function capabilities(ctx) {
+  return buildCapabilities(ctx, WRITE_FLAGS());
 }
 
-function requireWrite(req, feature) {
-  if (!liveClient) {
-    if (!DEMO_WRITE) {
-      throw new ActionError("WRITE_DISABLED", "演示执行已关闭，请配置服务端 Token 并使用私有模式", 403);
-    }
-    return { mode: "demo", live: false };
-  }
-  if (!ENABLE_WRITE || !SINGLE_USER_MODE) {
-    throw new ActionError("WRITE_DISABLED", "实时写操作未开启，请使用单用户私有模式", 403);
-  }
-  if (!WRITE_PASSCODE) {
-    throw new ActionError("WRITE_LOCKED", "未配置私有模式口令，写操作已锁定", 403);
-  }
-  if (!isUnlocked(req)) {
-    throw new ActionError("WRITE_LOCKED", "请先解锁单用户私有模式", 401);
-  }
-  if (feature === "coupon" && !ENABLE_COUPON_CLAIM) {
-    throw new ActionError("FEATURE_DISABLED", "自动领券未开启", 403);
-  }
-  if ((feature === "order" || feature === "auto") && !ENABLE_ORDER_CREATE) {
-    throw new ActionError("FEATURE_DISABLED", "创建订单未开启", 403);
-  }
-  if (feature === "auto" && !ENABLE_AUTO_REPURCHASE) {
-    throw new ActionError("FEATURE_DISABLED", "自动复购未开启", 403);
-  }
-  return { mode: "live", live: true };
+function requireWrite(ctx, feature) {
+  return writeDecision(ctx, feature, WRITE_FLAGS());
 }
 
 function sendActionError(res, error) {
@@ -486,10 +412,21 @@ async function bodyOr400(req, res) {
   }
 }
 
-async function runOptimize(input) {
-  if (liveClient && liveOptimize) {
+async function runOptimize(input, ctx = null) {
+  const client = ctx?.readClient || null;
+  if (client) {
     try {
-      return await liveOptimize(input, liveClient);
+      if (!liveOptimize) await loadMcpModule();
+      const result = await liveOptimize(input, client);
+      // 共享体验模式必须标明数据来自我方账号，避免误以为是自己的数据。
+      if (ctx?.mode === "host") {
+        result.warnings = [
+          "当前是我方 MCP 的体验数据，不能下单；绑定你自己的 Token 后才会用你的账号。",
+          ...(result.warnings || []),
+        ];
+        result.hostMode = true;
+      }
+      return result;
     } catch (error) {
       console.error(
         "[maimen-save-one] live optimize failed:",
@@ -521,7 +458,12 @@ async function runSubscriptionQuote(subscription) {
       403,
     );
   }
-  const quote = await createQuote({ result, planId: plan.id, source: result.mode });
+  const quote = await createQuote({
+    result,
+    planId: plan.id,
+    source: result.mode,
+    owner: subscription.owner,
+  });
   return { ...quote, plan, result };
 }
 
@@ -530,11 +472,15 @@ async function runSubscriptionOnce(subscription, { autoCreate }) {
     const result = await runSubscriptionQuote(subscription);
     let order = null;
     if (autoCreate) {
+      // 自动复购只能用电户自己的连接；没有连接就拒绝，绝不借用共享账号。
+      const client = registry.clientFor(subscription.owner);
+      if (!client) throw new ActionError("OWN_TOKEN_REQUIRED", "该固定套餐的所属用户尚未绑定 Token，已跳过自动复购", 403);
       const created = await createOrder({
         quoteId: result.quote.id,
         system: true,
-        live: Boolean(liveClient),
-        mcp: liveClient,
+        live: true,
+        mcp: client,
+        owner: subscription.owner,
         caps: {
           maxAmountCents: subscription.caps.maxAmountCents,
           maxDailyOrders: MAX_DAILY_ORDERS,
@@ -565,6 +511,7 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 429, { ok: false, error: "请求过于频繁，请稍后再试" });
     return true;
   }
+  const ctx = await resolveContext(req, res);
 
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, {
@@ -572,13 +519,12 @@ async function handleApi(req, res, pathname) {
       app: "maimen-save-one",
       name: "麦门省一单",
       version: APP_VERSION,
-      mode: liveClient ? "live" : "demo",
-      liveState,
-      liveError: liveState === "error" ? "实时接口暂不可用" : "",
-      writeMode: capabilities(req).writeMode,
-      singleUser: SINGLE_USER_MODE,
-      liveSource,
-      liveStored: storedTokenPresent,
+      mode: ctx.mode === "own" || ctx.mode === "host" ? "live" : "demo",
+      access: ctx.mode,
+      hostAvailable: Boolean(registry.hostClient),
+      hostState: registry.hostState,
+      bound: ctx.mode === "own",
+      writeMode: capabilities(ctx).writeMode,
       liveSetup: !LIVE_SETUP_DISABLED,
       uptimeSeconds: Math.round(process.uptime()),
       time: new Date().toISOString(),
@@ -587,84 +533,108 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/capabilities") {
-    sendJson(res, 200, { ok: true, ...capabilities(req) });
+    sendJson(res, 200, { ok: true, ...capabilities(ctx) });
     return true;
   }
 
+  // 兼容旧入口：语义等同于「当前浏览器的绑定状态」。
   if (req.method === "GET" && pathname === "/api/live/status") {
-    sendJson(res, 200, { ok: true, ...liveStatus() });
+    const status = await registry.status(ctx.uid);
+    sendJson(res, 200, {
+      ok: true,
+      setupEnabled: !LIVE_SETUP_DISABLED,
+      connected: ctx.mode === "own",
+      mode: ctx.mode,
+      source: ctx.mode === "own" ? "own" : ctx.mode === "host" ? "host" : "none",
+      envManaged: Boolean(MCD_MCP_TOKEN),
+      storedToken: Boolean(ctx.binding),
+      checkedAt: ctx.binding?.updatedAt || null,
+      lastError: status.session?.lastError || null,
+      hostAvailable: status.hostAvailable,
+    });
     return true;
   }
 
-  if (req.method === "POST" && pathname === "/api/live/token") {
+  if (req.method === "GET" && pathname === "/api/account/binding") {
+    const status = await registry.status(ctx.uid);
+    sendJson(res, 200, {
+      ok: true,
+      mode: ctx.mode,
+      setupEnabled: !LIVE_SETUP_DISABLED,
+      binding: status.binding,
+      identity: ctx.identity,
+      session: status.session,
+      host: { available: status.hostAvailable, state: status.hostState },
+      consentVersion: CONSENT_VERSION,
+      capabilities: capabilities(ctx),
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/account/bind") {
     if (LIVE_SETUP_DISABLED) {
-      throw new ActionError(
-        "SETUP_DISABLED",
-        "当前部署已关闭页面接入，请用环境变量 MCD_MCP_TOKEN 配置",
-        403,
-      );
+      throw new ActionError("SETUP_DISABLED", "当前部署已关闭页面绑定，请联系部署者", 403);
     }
     if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
     if (!allowRequest(clientIp(req), 5, 60_000)) {
-      sendJson(res, 429, {
-        ok: false,
-        code: "RATE_LIMITED",
-        error: "校验太频繁，请 1 分钟后再试",
-        ...liveStatus(),
-      });
+      sendJson(res, 429, { ok: false, code: "RATE_LIMITED", error: "绑定太频繁，请 1 分钟后再试" });
       return true;
     }
     const body = await bodyOr400(req, res);
     if (!body) return true;
-    const checked = normalizeToken(body.token);
-    if (!checked.ok) {
-      sendJson(res, 400, { ok: false, code: checked.code, error: checked.message, ...liveStatus() });
-      return true;
-    }
     try {
-      const client = await verifyToken(checked.token);
-      activateLiveClient(client, "stored");
-      await saveStoredToken(checked.token);
-      storedTokenPresent = true;
-      sendJson(res, 200, { ok: true, ...liveStatus(), capabilities: capabilities(req) });
-    } catch (error) {
-      const classified = classifyConnectError(error);
-      liveLastError = classified;
-      liveCheckedAt = new Date().toISOString();
-      if (!liveClient) liveState = "error";
-      console.error("[maimen-save-one] live token rejected:", classified.code);
-      sendJson(res, 502, {
-        ok: false,
-        code: classified.code,
-        error: classified.message,
-        ...liveStatus(),
+      await registry.bind(ctx.uid, { token: body.token, consent: Boolean(body.consent) });
+      const next = await resolveContext(req, res);
+      sendJson(res, 200, {
+        ok: true,
+        mode: next.mode,
+        binding: next.binding,
+        identity: next.identity,
+        capabilities: capabilities(next),
+        message: "已绑定你的账号，下单将使用你自己的 McDonald's 身份",
       });
+    } catch (error) {
+      const code = error.code || "BIND_FAILED";
+      const status = error.status || 502;
+      console.error("[maimen-save-one] bind failed:", code);
+      sendJson(res, status, { ok: false, code, error: error.message, mode: ctx.mode });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/account/unbind") {
+    if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
+    await registry.unbind(ctx.uid);
+    sendJson(res, 200, {
+      ok: true,
+      mode: registry.hostClient ? "host" : "none",
+      message: "已解绑，本机不再保存你的 Token；未支付的演示订单不影响任何真实账户",
+    });
+    return true;
+  }
+
+  // 旧接口保留为别名，但同样要求显式授权，避免绕过 consent。
+  if (req.method === "POST" && pathname === "/api/live/token") {
+    if (LIVE_SETUP_DISABLED) {
+      throw new ActionError("SETUP_DISABLED", "当前部署已关闭页面接入", 403);
+    }
+    if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
+    const body = await bodyOr400(req, res);
+    if (!body) return true;
+    try {
+      await registry.bind(ctx.uid, { token: body.token, consent: Boolean(body.consent) });
+      const next = await resolveContext(req, res);
+      sendJson(res, 200, { ok: true, mode: next.mode, binding: next.binding, capabilities: capabilities(next) });
+    } catch (error) {
+      sendJson(res, error.status || 502, { ok: false, code: error.code || "BIND_FAILED", error: error.message });
     }
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/live/disconnect") {
-    if (LIVE_SETUP_DISABLED) {
-      throw new ActionError("SETUP_DISABLED", "当前部署已关闭页面接入", 403);
-    }
     if (!sameOrigin(req)) throw new ActionError("CROSS_ORIGIN", "只接受站内请求", 403);
-    const envManaged = Boolean(MCD_MCP_TOKEN);
-    await clearStoredToken().catch(() => {});
-    storedTokenPresent = false;
-    const previous = liveClient;
-    liveClient = null;
-    liveOptimize = null;
-    readToolTrace = () => [];
-    liveState = envManaged && ENABLE_LIVE ? "no-token" : "disabled";
-    liveSource = "none";
-    liveLastError = null;
-    liveCheckedAt = null;
-    if (previous) Promise.resolve(previous.close()).catch(() => {});
-    sendJson(res, 200, {
-      ok: true,
-      note: envManaged ? "环境变量中的 Token 会在服务重启后重新连接" : "",
-      ...liveStatus(),
-    });
+    await registry.unbind(ctx.uid);
+    sendJson(res, 200, { ok: true, mode: registry.hostClient ? "host" : "none" });
     return true;
   }
 
@@ -674,12 +644,12 @@ async function handleApi(req, res, pathname) {
       latestSubscriptionRun(),
     ]);
     const view = buildStewardView({
-      mode: liveClient ? "live" : "demo",
-      liveState,
-      trace: readToolTrace(),
+      mode: ctx.mode === "own" || ctx.mode === "host" ? "live" : "demo",
+      liveState: ctx.mode,
+      trace: registry.trace(),
       lastQuote: quote,
       lastOrder: order,
-      capabilities: capabilities(req),
+      capabilities: capabilities(ctx),
       subscriptionRunAt,
     });
     sendJson(res, 200, { ok: true, ...view });
@@ -691,8 +661,8 @@ async function handleApi(req, res, pathname) {
       ok: true,
       app: "maimen-save-one",
       version: APP_VERSION,
-      mode: liveClient ? "live" : "demo",
-      liveState,
+      mode: ctx.mode === "own" || ctx.mode === "host" ? "live" : "demo",
+      liveState: ctx.mode,
       defaults: DEMO_DEFAULTS,
       stores: DEMO_STORES,
       pointsBalance: DEMO_POINTS,
@@ -701,7 +671,7 @@ async function handleApi(req, res, pathname) {
         combos: DEMO_COMBOS.length,
         coupons: DEMO_COUPONS.length,
       },
-      capabilities: capabilities(req),
+      capabilities: capabilities(ctx),
       live: liveStatus(),
       generatedAt: new Date().toISOString(),
     });
@@ -718,10 +688,10 @@ async function handleApi(req, res, pathname) {
     }
     try {
       const result = await runOptimize(input);
-      const caps = capabilities(req);
+      const caps = capabilities(ctx);
       result.deployment = {
         mode: result.mode,
-        liveState,
+        liveState: ctx.mode,
         orderEnabled: caps.orderCreate,
         writeMode: caps.writeMode,
         serverTime: new Date().toISOString(),
@@ -783,111 +753,123 @@ async function handleApi(req, res, pathname) {
     const body = await bodyOr400(req, res);
     if (!body) return true;
     const input = body.input && typeof body.input === "object" ? body.input : body;
-    const result = await runOptimize(input);
+    const result = await runOptimize(input, ctx);
     const quote = await createQuote({
       result,
       planId: body.planId,
       source: result.mode,
+      owner: ctx.uid,
     });
     sendJson(res, 200, {
       ok: true,
       ...quote,
       source: result.mode,
-      capabilities: capabilities(req),
+      capabilities: capabilities(ctx),
     });
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/coupons/claim") {
-    const access = requireWrite(req, "coupon");
+    const access = requireWrite(ctx, "coupon");
     const body = await bodyOr400(req, res);
     if (!body) return true;
     const result = await claimCoupon({
       quoteId: body.quoteId,
       token: body.token,
       live: access.live,
-      mcp: liveClient,
+      mcp: access.client,
+      owner: ctx.uid,
     });
-    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(ctx) });
     return true;
   }
 
   if (req.method === "GET" && pathname === "/api/orders") {
-    sendJson(res, 200, { ok: true, orders: await listOrders() });
+    sendJson(res, 200, { ok: true, orders: await listOrders(ctx.uid) });
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/orders") {
-    const access = requireWrite(req, "order");
+    const access = requireWrite(ctx, "order");
     const body = await bodyOr400(req, res);
     if (!body) return true;
     const result = await createOrder({
       quoteId: body.quoteId,
       token: body.token,
       live: access.live,
-      mcp: liveClient,
+      mcp: access.client,
+      owner: ctx.uid,
       caps: {
         maxAmountCents: MAX_ORDER_CENTS,
         maxDailyOrders: MAX_DAILY_ORDERS,
       },
     });
-    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    sendJson(res, 200, {
+      ok: true,
+      ...result,
+      submittedWith: access.mode === "own" ? "own-account" : "demo",
+      identity: ctx.identity,
+      capabilities: capabilities(ctx),
+    });
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/orders/reconcile") {
-    const access = requireWrite(req, "order");
-    const autoCancel =
-      access.mode === "demo" ? true : ENABLE_AUTO_CANCEL_UNPAID;
+    const access = requireWrite(ctx, "order");
+    const autoCancel = access.mode === "demo" ? true : ENABLE_AUTO_CANCEL_UNPAID;
     const result = await reconcileOrders({
       live: access.live,
-      mcp: liveClient,
+      mcp: access.client,
       autoCancel,
+      owner: ctx.uid,
     });
-    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(ctx) });
     return true;
   }
 
   let match = pathname.match(/^\/api\/orders\/([^/]+)\/mock-pay$/);
   if (req.method === "POST" && match) {
-    if (liveClient) {
+    const access = requireWrite(ctx, "order");
+    if (access.live) {
       throw new ActionError("MOCK_PAY_FORBIDDEN", "实时模式不允许模拟支付", 403);
     }
-    requireWrite(req, "order");
-    const result = await mockPay(decodeURIComponent(match[1]));
+    const result = await mockPay(decodeURIComponent(match[1]), { owner: ctx.uid });
     sendJson(res, 200, { ok: true, ...result });
     return true;
   }
 
   match = pathname.match(/^\/api\/orders\/([^/]+)\/cancel$/);
   if (req.method === "POST" && match) {
-    const access = requireWrite(req, "order");
+    const access = requireWrite(ctx, "order");
     const result = await cancelOrder(decodeURIComponent(match[1]), {
       live: access.live,
-      mcp: liveClient,
+      mcp: access.client,
+      owner: ctx.uid,
     });
-    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(req) });
+    sendJson(res, 200, { ok: true, ...result, capabilities: capabilities(ctx) });
     return true;
   }
 
   match = pathname.match(/^\/api\/orders\/([^/]+)$/);
   if (req.method === "GET" && match) {
+    const client = registry.clientFor(ctx.uid);
     const result = await refreshOrder(decodeURIComponent(match[1]), {
-      live: Boolean(liveClient),
-      mcp: liveClient,
+      live: Boolean(client),
+      mcp: client,
+      owner: ctx.uid,
     });
     sendJson(res, 200, { ok: true, ...result });
     return true;
   }
 
   if (req.method === "GET" && pathname === "/api/reminders") {
-    sendJson(res, 200, { ok: true, reminders: await listReminders() });
+    sendJson(res, 200, { ok: true, reminders: await listReminders(ctx.uid) });
     return true;
   }
 
   match = pathname.match(/^\/api\/reminders\/([^/]+)\/read$/);
   if (req.method === "POST" && match) {
-    const reminder = await markReminderRead(decodeURIComponent(match[1]));
+    const reminder = await markReminderRead(decodeURIComponent(match[1]), ctx.uid);
     sendJson(res, 200, { ok: true, reminder });
     return true;
   }
@@ -896,34 +878,38 @@ async function handleApi(req, res, pathname) {
     let account = null;
     let source = "demo";
     const warnings = [];
-    if (liveClient) {
+    const client = ctx.mode === "own" ? ctx.client : null;
+    if (client) {
       try {
-        account = await liveClient.accountData();
-        source = "live";
+        account = await client.accountData();
+        source = "own";
         warnings.push(...(account.warnings || []));
       } catch (error) {
-        warnings.push("实时账户暂不可用，已展示演示权益");
+        warnings.push("你的实时账户暂不可用，已展示演示权益");
+        registry.markError(ctx.uid, error);
       }
     }
     if (!account) {
-      account = await getAccountData();
+      // 未绑定用户只看演示权益，绝不读共享账号的券包/积分。
+      account = await getAccountData(null, ctx.uid);
       source = "demo";
+      if (ctx.mode === "host") warnings.push("绑定你自己的 Token 后可查看你的真实积分与券包");
     }
     await syncCouponReminders(account.coupons || []);
-    sendJson(res, 200, { ok: true, source, account, warnings });
+    sendJson(res, 200, { ok: true, source, account, warnings, identity: ctx.identity });
     return true;
   }
 
   if (req.method === "GET" && pathname === "/api/subscriptions") {
-    sendJson(res, 200, { ok: true, subscriptions: await listSubscriptions() });
+    sendJson(res, 200, { ok: true, subscriptions: await listSubscriptions(ctx.uid) });
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/subscriptions") {
-    requireWrite(req, "order");
+    requireWrite(ctx, "order");
     const body = await bodyOr400(req, res);
     if (!body) return true;
-    if (body.autoOrder && !capabilities(req).autoRepurchase) {
+    if (body.autoOrder && !capabilities(ctx).autoRepurchase) {
       throw new ActionError("FEATURE_DISABLED", "自动复购未开启，请先配置单用户私有模式", 403);
     }
     const subscription = await createSubscription({
@@ -932,33 +918,34 @@ async function handleApi(req, res, pathname) {
       maxRunsPerDay: body.maxRunsPerDay,
       intervalMinutes: body.intervalMinutes,
       autoOrder: Boolean(body.autoOrder),
+      owner: ctx.uid,
     });
-    sendJson(res, 200, { ok: true, subscription, capabilities: capabilities(req) });
+    sendJson(res, 200, { ok: true, subscription, capabilities: capabilities(ctx) });
     return true;
   }
 
   match = pathname.match(/^\/api\/subscriptions\/([^/]+)\/toggle$/);
   if (req.method === "POST" && match) {
     const id = decodeURIComponent(match[1]);
-    const subscriptions = await listSubscriptions();
+    const subscriptions = await listSubscriptions(ctx.uid);
     const subscription = subscriptions.find((item) => item.id === id);
     if (!subscription) throw new ActionError("SUBSCRIPTION_NOT_FOUND", "固定套餐不存在", 404);
-    requireWrite(req, "order");
+    requireWrite(ctx, "order");
     const body = await bodyOr400(req, res);
     if (!body) return true;
-    if (body.enabled && subscription.autoOrder) requireWrite(req, "auto");
-    const updated = await toggleSubscription(id, Boolean(body.enabled));
-    sendJson(res, 200, { ok: true, subscription: updated, capabilities: capabilities(req) });
+    if (body.enabled && subscription.autoOrder) requireWrite(ctx, "auto");
+    const updated = await toggleSubscription(id, Boolean(body.enabled), ctx.uid);
+    sendJson(res, 200, { ok: true, subscription: updated, capabilities: capabilities(ctx) });
     return true;
   }
 
   match = pathname.match(/^\/api\/subscriptions\/([^/]+)\/run$/);
   if (req.method === "POST" && match) {
     const id = decodeURIComponent(match[1]);
-    requireWrite(req, "order");
+    requireWrite(ctx, "order");
     const body = await bodyOr400(req, res);
     if (!body) return true;
-    const subscriptions = await listSubscriptions();
+    const subscriptions = await listSubscriptions(ctx.uid);
     const subscription = subscriptions.find((item) => item.id === id);
     if (!subscription) throw new ActionError("SUBSCRIPTION_NOT_FOUND", "固定套餐不存在", 404);
     const today = new Date();
@@ -979,15 +966,15 @@ async function handleApi(req, res, pathname) {
       plan: result.plan,
       order: result.order,
       subscription: result.subscription,
-      capabilities: capabilities(req),
+      capabilities: capabilities(ctx),
     });
     return true;
   }
 
   match = pathname.match(/^\/api\/subscriptions\/([^/]+)$/);
   if (req.method === "DELETE" && match) {
-    requireWrite(req, "order");
-    const result = await deleteSubscription(decodeURIComponent(match[1]));
+    requireWrite(ctx, "order");
+    const result = await deleteSubscription(decodeURIComponent(match[1]), ctx.uid);
     sendJson(res, 200, { ok: true, ...result });
     return true;
   }
@@ -998,7 +985,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/version") {
-    sendJson(res, 200, { ok: true, version: APP_VERSION, mode: liveClient ? "live" : "demo" });
+    sendJson(res, 200, { ok: true, version: APP_VERSION, mode: ctx.mode === "own" || ctx.mode === "host" ? "live" : "demo" });
     return true;
   }
 
@@ -1008,10 +995,8 @@ async function handleApi(req, res, pathname) {
 let schedulerBusy = false;
 async function processSubscriptions() {
   if (schedulerBusy) return;
-  if (!liveClient && !DEMO_WRITE) return;
-  if (liveClient && !(ENABLE_WRITE && SINGLE_USER_MODE && ENABLE_AUTO_REPURCHASE)) {
-    return;
-  }
+  if (!registry.hostClient && !DEMO_WRITE) return;
+  if (!ENABLE_AUTO_REPURCHASE) return;
   schedulerBusy = true;
   try {
     const subscriptions = await dueSubscriptions();
@@ -1067,17 +1052,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[maimen-save-one] listening on http://${HOST}:${PORT} mode=${liveClient ? "live" : "demo"}`);
+  console.log(`[maimen-save-one] listening on http://${HOST}:${PORT} mode=${MCD_MCP_TOKEN ? "host-live" : "demo"}`);
   initLive().then(async () => {
-    console.log(`[maimen-save-one] live state: ${liveState}`);
+    console.log(`[maimen-save-one] host state: ${registry.hostState}`);
     try {
-      if (liveClient) {
-        const account = await liveClient.accountData();
-        await syncCouponReminders(account.coupons || []);
-      } else {
-        const account = await getAccountData();
-        await syncCouponReminders(account.coupons || []);
-      }
+      const account = await getAccountData();
+      await syncCouponReminders(account.coupons || []);
     } catch (error) {
       console.error("[maimen-save-one] reminder init failed:", error);
     }
@@ -1088,9 +1068,11 @@ server.listen(PORT, HOST, () => {
 async function shutdown(signal) {
   console.log(`[maimen-save-one] shutting down (${signal})`);
   server.close();
-  if (liveClient) {
+  const clients = [registry.host.client, ...[...registry.users.values()].map((entry) => entry.client)];
+  for (const client of clients) {
+    if (!client) continue;
     try {
-      await liveClient.close();
+      await client.close();
     } catch {
       // ignore
     }

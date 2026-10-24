@@ -41,6 +41,8 @@ const state = {
   lastFocus: null,
   live: {
     status: null,
+    binding: null,
+    consent: false,
     busy: false,
     revealed: false,
   },
@@ -118,6 +120,18 @@ const els = {
   footerInfoBtn: $("#footerInfoBtn"),
   liveSetup: $("#liveSetup"),
   livePill: $("#livePill"),
+  authState: $("#authState"),
+  authStateIcon: $("#authStateIcon"),
+  authStateTitle: $("#authStateTitle"),
+  authStateText: $("#authStateText"),
+  liveConsent: $("#liveConsent"),
+  identityPanel: $("#identityPanel"),
+  identityName: $("#identityName"),
+  identityAvatar: $("#identityAvatar"),
+  identityMeta: $("#identityMeta"),
+  identityBadge: $("#identityBadge"),
+  identityToken: $("#identityToken"),
+  liveSteps: $("#liveSteps"),
   liveForm: $("#liveForm"),
   liveToken: $("#liveToken"),
   liveReveal: $("#liveReveal"),
@@ -879,17 +893,39 @@ const LIVE_PILL_TEXT = {
 };
 
 const LIVE_ERROR_HINT = {
-  TOKEN_MISSING: "请先粘贴 MCP Token。",
+  TOKEN_MISSING: "请先粘贴你自己的 MCP Token。",
   TOKEN_TOO_SHORT: "Token 看起来不完整，确认整段复制后再试。",
   TOKEN_TOO_LONG: "Token 超过 512 个字符，只粘贴 Token 本身。",
   TOKEN_FORMAT: "Token 中间不能有空格、换行或多余字符。",
-  INVALID_TOKEN: "Token 校验未通过（401），可能已失效或复制不全，请重新生成。",
-  TIMEOUT: "连接 MCP 超时，检查服务端网络或稍后重试。",
+  INVALID_TOKEN: "授权失败：Token 校验未通过（401），可能已失效或复制不全，请重新生成。",
+  IDENTITY_FAILED: "已连上 MCP，但读不到你的账号身份。请在开放平台确认已开通账号读取权限。",
+  TIMEOUT: "授权超时：连接 MCP 太慢，检查服务端网络或稍后重试。",
   NETWORK: "服务端访问不了 mcp.mcd.cn，检查网络、防火墙或代理。",
   CONNECT_FAILED: "连接 MCP 失败，稍后重试；反复失败请查看服务端日志。",
-  SETUP_DISABLED: "当前部署关闭了页面接入，请改用环境变量 MCD_MCP_TOKEN。",
+  CONSENT_REQUIRED: "请先勾选授权说明，才可以用你的账号下单。",
+  SETUP_DISABLED: "当前部署关闭了页面绑定，请联系部署者。",
   CROSS_ORIGIN: "请求来源不被接受，请从本站页面操作。",
-  RATE_LIMITED: "校验太频繁，等一分钟再试。",
+  RATE_LIMITED: "操作太频繁，等一分钟再试。",
+  OWNER_MISMATCH: "这笔记录属于另一个浏览器身份（Cookie 被清除或被拦截）。已为你重新算一单，请再确认一次。",
+  OWN_TOKEN_REQUIRED: "体验模式不能下单。绑定你自己的 Token 后，系统才会用你的账号提交订单。",
+};
+
+const MODE_COPY = {
+  own: {
+    pill: "已绑定我的账号",
+    title: "已授权：下单使用你自己的账号",
+    text: "报价、领券、订单都走你绑定的身份；每单仍需你点确认，不会自动付款。",
+  },
+  host: {
+    pill: "体验模式",
+    title: "体验模式：我方 MCP 只读",
+    text: "可以真实算价、看菜单，但下单会被拦截。绑定你自己的 Token 后才能用你的账号提交订单。",
+  },
+  none: {
+    pill: "演示数据",
+    title: "演示数据：未连接 MCP",
+    text: "当前没有可用的 MCP 连接，算价使用演示数据；绑定你自己的 Token 后切换为真实数据。",
+  },
 };
 
 function renderLiveFeedback(message, kind = "error") {
@@ -906,44 +942,90 @@ function clearLiveFeedback() {
   els.liveFeedback.textContent = "";
 }
 
+function renderAuthState(binding, mode) {
+  const copy = MODE_COPY[mode] || MODE_COPY.none;
+  if (els.authState) els.authState.dataset.mode = mode;
+  if (els.authStateTitle) els.authStateTitle.textContent = copy.title;
+  if (els.authStateText) els.authStateText.textContent = copy.text;
+  if (els.authStateIcon) els.authStateIcon.textContent = mode === "own" ? "✓" : mode === "host" ? "i" : "!";
+  if (els.livePill) {
+    els.livePill.dataset.state = mode === "own" ? "live" : mode === "host" ? "host" : "demo";
+    els.livePill.textContent = copy.pill;
+  }
+  const bound = mode === "own" && Boolean(binding);
+  if (els.identityPanel) els.identityPanel.classList.toggle("hidden", !bound);
+  if (els.liveSteps) els.liveSteps.classList.toggle("hidden", bound);
+  if (bound) {
+    const identity = binding.identity || {};
+    const nickname = identity.nickname || "已授权的麦当劳账号";
+    if (els.identityName) els.identityName.textContent = nickname;
+    if (els.identityAvatar) els.identityAvatar.textContent = (nickname[0] || "M").toUpperCase();
+    if (els.identityMeta) {
+      const parts = [];
+      if (identity.memberNo) parts.push(`会员号 ${identity.memberNo}`);
+      if (identity.level) parts.push(identity.level);
+      if (binding.boundAt) parts.push(`绑定于 ${formatDateTime(binding.boundAt)}`);
+      els.identityMeta.textContent = parts.join(" · ") || "身份已读取";
+    }
+    if (els.identityToken) els.identityToken.textContent = binding.tokenTail ? `••••${binding.tokenTail}` : "••••";
+    if (els.identityBadge) {
+      const expired = binding.status && binding.status !== "active";
+      els.identityBadge.textContent = expired ? "授权已失效" : "已授权";
+      els.identityBadge.classList.toggle("is-expired", Boolean(expired));
+    }
+  }
+  if (els.liveDisconnect) els.liveDisconnect.classList.toggle("hidden", !Boolean(binding));
+}
+
 function renderLiveStatus(status) {
   if (!els.livePill || !status) return;
   state.live.status = status;
   const checking = state.live.busy;
-  let key = "demo";
-  if (!status.setupEnabled) key = "disabled";
-  else if (checking) key = "checking";
-  else if (status.connected) key = "live";
-  else if (status.lastError) key = "error";
-
-  els.livePill.dataset.state = key;
-  els.livePill.textContent = LIVE_PILL_TEXT[key];
+  const mode = status.mode || (status.connected ? "own" : "host");
+  renderAuthState(status.binding || null, checking ? "none" : mode);
+  if (checking && els.authStateTitle) {
+    els.authStateTitle.textContent = "正在绑定并校验你的账号…";
+    els.authStateText.textContent = "正在连接 MCP 并读取账号身份，请稍候。";
+    els.livePill.dataset.state = "checking";
+    els.livePill.textContent = "校验中…";
+  }
   const disabled = !status.setupEnabled || checking;
   if (els.liveSave) {
-    els.liveSave.disabled = disabled;
-    els.liveSave.textContent = status.connected ? "更换 Token" : "保存并校验";
+    els.liveSave.disabled = disabled || !state.live.consent;
+    els.liveSave.textContent = mode === "own" ? "重新绑定" : "绑定我的账号";
   }
   if (els.liveToken) els.liveToken.disabled = disabled;
-  if (els.liveDisconnect) els.liveDisconnect.classList.toggle("hidden", !status.connected);
+  if (els.liveConsent) els.liveConsent.disabled = disabled;
   if (els.liveSetup) els.liveSetup.classList.toggle("is-busy", checking);
 }
 
 async function loadLiveStatus() {
   try {
-    const data = await api("api/live/status");
-    renderLiveStatus(data);
+    const data = await api("api/account/binding");
+    state.live.binding = data;
+    renderLiveStatus({
+      setupEnabled: data.setupEnabled,
+      mode: data.mode,
+      binding: data.binding,
+      connected: data.mode === "own",
+    });
     if (!data.setupEnabled) {
       renderLiveFeedback(LIVE_ERROR_HINT.SETUP_DISABLED, "error");
-    } else if (data.connected) {
-      const from = data.envManaged ? "环境变量" : "页面保存的 Token";
-      renderLiveFeedback(`已连接实时数据（来源：${from}）${data.checkedAt ? ` · 校验于 ${formatDateTime(data.checkedAt)}` : ""}。`, "ok");
-    } else if (data.lastError) {
-      renderLiveFeedback(LIVE_ERROR_HINT[data.lastError.code] || data.lastError.message, "error");
+    } else if (data.mode === "own") {
+      const at = data.binding?.boundAt ? ` · 绑定于 ${formatDateTime(data.binding.boundAt)}` : "";
+      renderLiveFeedback(`已用你的账号授权，下单将以你的身份提交${at}。`, "ok");
+    } else if (data.session?.lastError?.code) {
+      renderLiveFeedback(
+        LIVE_ERROR_HINT[data.session.lastError.code] || data.session.lastError.message,
+        "error",
+      );
+    } else if (data.mode === "host") {
+      renderLiveFeedback("当前是体验模式：能真实算价，但下单需要先绑定你自己的 Token。", "ok");
     }
     return data;
   } catch {
-    renderLiveStatus({ setupEnabled: true, connected: false, state: "disabled", lastError: null });
-    renderLiveFeedback("无法读取接入状态，刷新页面重试；算价与下单不受影响。", "error");
+    renderLiveStatus({ setupEnabled: true, mode: "none", binding: null });
+    renderLiveFeedback("无法读取授权状态，刷新页面重试；算价仍可用。", "error");
     return null;
   }
 }
@@ -957,13 +1039,18 @@ async function saveLiveToken(event) {
     els.liveToken?.focus();
     return;
   }
+  if (!state.live.consent) {
+    renderLiveFeedback(LIVE_ERROR_HINT.CONSENT_REQUIRED, "error");
+    els.liveConsent?.focus();
+    return;
+  }
   state.live.busy = true;
   clearLiveFeedback();
-  renderLiveStatus(state.live.status || { setupEnabled: true, connected: false });
+  renderLiveStatus(state.live.status || { setupEnabled: true, mode: "host" });
   try {
-    const data = await api("api/live/token", {
+    const data = await api("api/account/bind", {
       method: "POST",
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, consent: true }),
     });
     state.live.busy = false;
     if (els.liveToken) {
@@ -971,15 +1058,18 @@ async function saveLiveToken(event) {
       els.liveToken.type = "password";
     }
     if (els.liveReveal) els.liveReveal.textContent = "显示";
-    renderLiveStatus({ ...data, lastError: null });
-    renderLiveFeedback("校验通过，已切换为实时数据。重新点一次「一键算最省」，就能拿到真实门店与官方核价。", "ok");
-    showToast("已接入麦当劳 MCP");
+    state.live.consent = false;
+    if (els.liveConsent) els.liveConsent.checked = false;
+    renderLiveStatus({ setupEnabled: true, mode: data.mode, binding: data.binding, connected: true });
+    const name = data.identity?.nickname || "你的账号";
+    renderLiveFeedback(`绑定成功：之后下单会使用「${name}」的身份，且只有你确认才提交。`, "ok");
+    showToast("已绑定你的麦当劳账号");
     await loadBootstrap();
     resetAfterModeSwitch();
   } catch (error) {
     state.live.busy = false;
-    const hint = LIVE_ERROR_HINT[error.code] || error.message || "校验失败，请稍后重试";
-    renderLiveStatus({ setupEnabled: true, connected: false, state: "error", lastError: { code: error.code, message: hint } });
+    const hint = LIVE_ERROR_HINT[error.code] || error.message || "绑定失败，请稍后重试";
+    renderLiveStatus(state.live.status || { setupEnabled: true, mode: "host", binding: null });
     renderLiveFeedback(hint, "error");
     els.liveToken?.focus();
   }
@@ -987,20 +1077,23 @@ async function saveLiveToken(event) {
 
 async function disconnectLive() {
   if (state.live.busy) return;
-  if (!window.confirm("断开后页面回到演示数据，确认断开？")) return;
+  if (!window.confirm("解绑后本机不再保存你的 Token，下单会回到体验模式。确认解绑？")) return;
   state.live.busy = true;
-  renderLiveStatus(state.live.status || { setupEnabled: true, connected: true });
+  renderLiveStatus(state.live.status || { setupEnabled: true, mode: "own" });
   try {
-    const data = await api("api/live/disconnect", { method: "POST", body: "{}" });
+    const data = await api("api/account/unbind", { method: "POST", body: "{}" });
     state.live.busy = false;
-    renderLiveStatus({ ...data, connected: false, lastError: null });
-    renderLiveFeedback(`已断开，回到演示数据。${data.note || ""}`.trim(), "ok");
-    showToast("已断开实时数据");
+    const next = await loadLiveStatus();
+    renderLiveFeedback(
+      `已解绑。当前为${next?.mode === "host" ? "体验" : "演示"}模式，${data.message || ""}`.trim(),
+      "ok",
+    );
+    showToast("已解绑你的账号");
     await loadBootstrap();
     resetAfterModeSwitch();
   } catch (error) {
     state.live.busy = false;
-    renderLiveStatus(state.live.status || { setupEnabled: true, connected: false });
+    renderLiveStatus(state.live.status || { setupEnabled: true, mode: "host", binding: null });
     renderLiveFeedback(error.message, "error");
   }
 }
@@ -1011,6 +1104,19 @@ function toggleLiveToken() {
   state.live.revealed = !revealed;
   els.liveToken.type = revealed ? "password" : "text";
   els.liveReveal.textContent = revealed ? "显示" : "隐藏";
+}
+
+// 未绑定就去下单时，把用户带到绑定卡片，而不是只丢一句报错。
+function promptBindAccount(message) {
+  showToast(message || LIVE_ERROR_HINT.OWN_TOKEN_REQUIRED, true);
+  const card = els.liveSetup;
+  if (card) {
+    card.classList.add("is-highlight");
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => card.classList.remove("is-highlight"), 2200);
+  }
+  setTimeout(() => els.liveToken?.focus(), 320);
+  if (els.stewardModal && !els.stewardModal.classList.contains("hidden")) closeModal("steward");
 }
 
 // 切换数据模式后旧的方案/报价/订单都不再成立，直接清空主路径结果。
@@ -1034,14 +1140,14 @@ function resetAfterModeSwitch() {
 
 function executionBadge() {
   const caps = state.capabilities || {};
-  if (caps.mode === "demo" || caps.writeMode === "demo") {
+  if (caps.access === "own" && caps.writeMode === "private") {
+    return '<span class="execution-badge is-live">我的账号 · 确认后下单</span>';
+  }
+  if (caps.access === "host") {
+    return '<span class="execution-badge is-locked">体验模式 · 绑定后可下单</span>';
+  }
+  if (caps.writeMode === "demo") {
     return '<span class="execution-badge is-demo">演示执行 · 不写真实账户</span>';
-  }
-  if (caps.writeMode === "private" && caps.unlocked) {
-    return '<span class="execution-badge is-live">私有实时 · 已解锁</span>';
-  }
-  if (caps.writeMode === "private") {
-    return '<span class="execution-badge is-locked">私有实时 · 待解锁</span>';
   }
   return '<span class="execution-badge is-locked">只读模式</span>';
 }
@@ -1153,6 +1259,7 @@ function stewardMetaLine(phase) {
   if (phase === "ordered" && state.order) {
     parts.push(money(state.order.amountCents));
     parts.push(orderStatusLabel(state.order.status));
+    parts.push(state.order.demo ? "演示单" : "我的账号提交");
   }
   parts.push(state.dataMode === "live" ? "实时数据" : "演示数据");
   return parts.join(" · ");
@@ -1341,6 +1448,11 @@ async function requestOrder() {
     showToast("先算一单，再确认下单", true);
     return;
   }
+  const caps = state.capabilities || {};
+  if (caps.needsOwnToken) {
+    promptBindAccount();
+    return;
+  }
   if (!state.quote) {
     setPhase("preparing");
     try {
@@ -1390,6 +1502,21 @@ async function confirmOrderAction() {
         setPhase("error");
       }
       showToast(error.code === "PRICE_CHANGED" ? "价格已变化，请重新确认" : "报价已更新，请重新确认", true);
+      return;
+    }
+    if (error.code === "OWN_TOKEN_REQUIRED") {
+      state.steward.confirmOpen = false;
+      promptBindAccount(error.message);
+      return;
+    }
+    if (error.code === "OWNER_MISMATCH") {
+      // Cookie 丢失导致身份变了：重新走一遍完整算单，而不是让用户反复点确认。
+      state.quote = null;
+      state.quoteTokens = null;
+      state.steward.confirmOpen = false;
+      setPhase("hidden");
+      showToast(LIVE_ERROR_HINT.OWNER_MISMATCH, true);
+      await optimizeNow();
       return;
     }
     if (error.code === "WRITE_LOCKED" || error.status === 401) {
@@ -1559,6 +1686,7 @@ function orderCardHtml(order) {
         <span>${money(order.amountCents)}</span>
         <span>${escapeHtml(order.store?.name || "")}</span>
         <span>${modeText(order.plan?.mode)}</span>
+        <span class="order-owner">${order.demo ? "演示单 · 未提交真实账户" : "已用你的账号提交 · 待你支付"}</span>
       </div>
       <div class="order-actions">
         ${payUrl ? `<button type="button" class="mini-button mini-button-red" data-steward-action="pay-link">打开官方支付</button>` : ""}
@@ -2405,6 +2533,14 @@ function bindEvents() {
   els.footerInfoBtn.addEventListener("click", () => openModal("info"));
   if (els.liveForm) els.liveForm.addEventListener("submit", saveLiveToken);
   if (els.liveReveal) els.liveReveal.addEventListener("click", toggleLiveToken);
+  if (els.liveConsent) {
+    els.liveConsent.addEventListener("change", () => {
+      state.live.consent = els.liveConsent.checked;
+      if (els.liveSave) {
+        els.liveSave.disabled = state.live.busy || !state.live.consent;
+      }
+    });
+  }
   if (els.liveDisconnect) els.liveDisconnect.addEventListener("click", disconnectLive);
   els.planCards.addEventListener("click", (event) => {
     const action = event.target.closest("[data-action]");

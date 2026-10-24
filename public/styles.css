@@ -907,6 +907,12 @@ svg {
   background: currentColor;
 }
 
+.live-pill[data-state="host"] {
+  border-color: rgba(24, 95, 165, 0.32);
+  color: #185fa5;
+  background: #e6f1fb;
+}
+
 .live-pill[data-state="live"] {
   border-color: rgba(31, 122, 77, 0.35);
   color: var(--green);
@@ -932,6 +938,212 @@ svg {
 .live-pill[data-state="disabled"] {
   color: var(--faint);
   border-style: dashed;
+}
+
+/* 授权状态：三种模式各有明确颜色，避免用户误以为在用自己的账号 */
+.auth-state {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.auth-state-icon {
+  flex: none;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.auth-state-body b {
+  display: block;
+  font-size: 12px;
+}
+
+.auth-state-body p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.auth-state[data-mode="own"] {
+  border-color: rgba(31, 122, 77, 0.3);
+  background: var(--green-soft);
+}
+
+.auth-state[data-mode="own"] .auth-state-icon {
+  background: var(--green);
+}
+
+.auth-state[data-mode="host"] {
+  border-color: rgba(24, 95, 165, 0.26);
+  background: #e6f1fb;
+}
+
+.auth-state[data-mode="host"] .auth-state-icon {
+  background: #185fa5;
+}
+
+.auth-state[data-mode="none"] {
+  border-color: rgba(218, 41, 28, 0.24);
+  background: var(--red-soft);
+}
+
+.auth-state[data-mode="none"] .auth-state-icon {
+  background: var(--red);
+}
+
+.consent-row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 2px 0 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 10.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.consent-row input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--red);
+}
+
+.consent-row:has(input:checked) {
+  border-style: solid;
+  border-color: rgba(31, 122, 77, 0.35);
+  color: var(--ink);
+  background: var(--green-soft);
+}
+
+.identity-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.identity-card {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(31, 122, 77, 0.28);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.identity-avatar {
+  flex: none;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff;
+  background: linear-gradient(150deg, var(--green) 0%, #2a9d63 100%);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.identity-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.identity-main b {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-main small {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-badge {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 9.5px;
+  font-weight: 800;
+}
+
+.identity-badge.is-expired {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.identity-rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.identity-rows > div {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 6px 2px;
+  border-bottom: 1px dashed var(--line);
+  font-size: 10.5px;
+}
+
+.identity-rows dt {
+  color: var(--muted);
+}
+
+.identity-rows dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+  word-break: break-all;
+}
+
+.identity-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.live-setup.is-highlight {
+  border-color: var(--red);
+  box-shadow: 0 0 0 4px rgba(218, 41, 28, 0.14);
+}
+
+.order-owner {
+  color: var(--green);
+  font-weight: 800;
 }
 
 .live-setup-grid {

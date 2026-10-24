@@ -224,9 +224,17 @@ npm start
 
 默认 `ENABLE_LIVE=false`，无需 Token 即可体验完整交互。接入实时数据有两条路：
 
-**方式一（推荐给终端用户）：在页面上填。**
+**方式一（推荐给终端用户）：在页面上绑定自己的账号。**
 
-打开首页的「接入麦当劳 MCP」卡片 → 粘贴 Token → 点「保存并校验」。服务端会立即连接 MCP 并试调一个只读工具，通过后才写入 `data/live-token.json`（权限 `0600`，已 gitignore），页面随即切换到实时数据。
+打开首页的「用你自己的麦当劳账号下单」卡片 → 粘贴 Token → 勾选授权 → 点「绑定我的账号」。服务端会连接 MCP、读取一次账号身份（昵称/会员号脱敏），通过后才写入 `data/users/<uid>.json`（权限 `0600`，已 gitignore）。
+
+三层身份模型：
+
+| 状态 | 数据来源 | 能否下单 |
+|---|---|---|
+| 未绑定 · 体验模式 | 我方 MCP（只读） | 否，提示绑定自己的 Token |
+| 未绑定 · 无共享 Token | 演示数据 | 仅演示订单，不触及真实账户 |
+| 已绑定 · 已授权 | 你自己的 MCP 连接 | 可以，每单仍需你点确认 |
 
 **方式二（推荐给部署者）：用环境变量。**
 
@@ -235,9 +243,10 @@ MCD_MCP_TOKEN=你的_MCP_Token
 ENABLE_LIVE=true
 ```
 
-> Token 只存在服务端（环境变量或 `data/live-token.json`），不会写入浏览器存储、不会出现在任何 API 响应里。环境变量优先于页面保存的值。
-> 想彻底关闭页面填写入口，设 `DISABLE_LIVE_SETUP=true`。
-> 实时模式下**写操作**（领券、下单）仍然需要单用户私有模式 + 口令解锁，这是刻意保留的安全边界。
+> Token 只存在服务端，按浏览器身份（`ms_uid` 签名 Cookie）隔离保存；浏览器不写 localStorage、接口不回显。
+> 环境变量 `MCD_MCP_TOKEN` 现在只作为「我方 MCP 体验账号」，永远不替用户下单。
+> 想彻底关闭页面绑定入口，设 `DISABLE_LIVE_SETUP=true`。
+> 每个用户的报价、订单、提醒、固定套餐、券包都按 uid 归属；跨用户访问返回 404 或 `OWNER_MISMATCH`。
 
 ---
 
@@ -317,9 +326,10 @@ curl -s -X POST http://127.0.0.1:8899/api/optimize \
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/api/capabilities` | 当前数据模式与写操作开关 |
-| GET | `/api/live/status` | 实时接入状态：是否连接、来源（env/stored）、上次校验时间与错误 |
-| POST | `/api/live/token` | 校验并保存 Token（同源 + 5 次/分钟限流；校验通过才落盘） |
-| POST | `/api/live/disconnect` | 断开实时连接并清除页面保存的 Token |
+| GET | `/api/account/binding` | 当前浏览器身份、绑定状态、脱敏身份、会话错误 |
+| POST | `/api/account/bind` | 绑定本人 Token（需 consent=true；同源 + 5 次/分钟限流） |
+| POST | `/api/account/unbind` | 解绑并删除该身份的 Token 与连接 |
+| GET | `/api/live/status` | 兼容旧入口：返回当前身份的绑定状态 |
 | GET | `/api/steward` | 管家聚合视图：模式、MCP 管道 5 步、8 项自动化、最近报价/订单摘要 |
 | POST | `/api/quote` | 生成报价快照与一次性确认令牌 |
 | POST | `/api/coupons/claim` | 领取报价中的单张最优券 |
@@ -346,7 +356,8 @@ curl -s -X POST http://127.0.0.1:8899/api/optimize \
 - 演示数据为示例，不代表真实门店库存、价格或优惠；实际以麦当劳官方渠道为准。
 - 实时模式默认只读；写操作只在单用户私有模式解锁后开启，受金额、频次和 kill switch 限制。
 - 每次写操作都需要报价快照与一次性确认令牌；创建订单前二次核价，价格变化会中止并要求重新确认。
-- 页面填写 Token 时，Token 只在提交瞬间经过同源 HTTPS/HTTP 到服务端，服务端用一次只读工具调用校验后才写入 `data/live-token.json`（`0600`，已 gitignore）；浏览器不写 localStorage、不回显、接口不返回。
+- 绑定 Token 时，Token 只在提交瞬间经过同源请求到服务端；服务端连接 MCP 并读取一次账号身份（脱敏）后才写入 `data/users/<uid>.json`（`0600`，已 gitignore）。浏览器不写 localStorage、不回显、任何接口不返回 Token。
+- 身份是 HttpOnly 签名 Cookie `ms_uid`；报价、订单、提醒、固定套餐、券包都按 owner 隔离，跨用户读写返回 404 或 `OWNER_MISMATCH`。
 - `/api/live/token` 只接受同源请求，并限制每分钟 5 次校验；设置 `DISABLE_LIVE_SETUP=true` 可整体关闭页面接入。
 - 订单状态机记录 `quoted → confirmed → pending_payment → paid/cancelled`；未支付重复单可对账取消，已支付订单不自动退款。
 - MCP Token 不进入前端、不进入 API 响应、不写入日志。
